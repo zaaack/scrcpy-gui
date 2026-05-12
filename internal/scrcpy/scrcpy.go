@@ -22,6 +22,7 @@ type Instance struct {
 	running   bool
 	mu        sync.Mutex
 	stopCh    chan struct{}
+	onExit    func()
 }
 
 // NewInstance 创建新的scrcpy实例
@@ -112,6 +113,13 @@ func (inst *Instance) GetSerial() string {
 	return inst.serial
 }
 
+// SetOnExit 设置进程退出时的回调函数
+func (inst *Instance) SetOnExit(callback func()) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	inst.onExit = callback
+}
+
 // monitor 监控scrcpy进程状态
 func (inst *Instance) monitor() {
 	if inst.cmd == nil || inst.cmd.Process == nil {
@@ -123,12 +131,18 @@ func (inst *Instance) monitor() {
 	
 	inst.mu.Lock()
 	inst.running = false
+	onExit := inst.onExit
 	inst.mu.Unlock()
 	
 	if err != nil {
 		log.Printf("scrcpy进程异常退出: 设备 %s, 错误: %v", inst.serial, err)
 	} else {
 		log.Printf("scrcpy进程正常退出: 设备 %s", inst.serial)
+	}
+	
+	// 调用退出回调
+	if onExit != nil {
+		onExit()
 	}
 }
 

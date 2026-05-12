@@ -332,6 +332,26 @@ func (w *Window) startScrcpy(serial string) {
 	cfg.WindowTitle = serial
 
 	instance := scrcpy.NewInstance(serial, cfg)
+	
+	// 设置退出回调，当scrcpy退出时自动停止工具栏
+	instance.SetOnExit(func() {
+		w.mu.Lock()
+		if tb, exists := w.toolbars[serial]; exists {
+			tb.Stop()
+			delete(w.toolbars, serial)
+		}
+		// 更新设备运行状态
+		for i := range w.devices {
+			if w.devices[i].Device.Serial == serial {
+				w.devices[i].Running = false
+				break
+			}
+		}
+		delete(w.instances, serial)
+		w.mu.Unlock()
+		log.Printf("scrcpy退出，已清理工具栏: 设备 %s", serial)
+	})
+	
 	if err := instance.Start(); err != nil {
 		log.Printf("启动scrcpy失败: %v", err)
 		return
