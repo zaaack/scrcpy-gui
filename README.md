@@ -4,6 +4,8 @@ English | [中文](README_CN.md)
 
 A Gio UI-based graphical interface for scrcpy, providing device management and floating toolbar control.
 
+![Scrcpy GUI Screenshot](docs/pic.png)
+
 ## Prerequisites
 
 Before using this tool, you need to manually install the following dependencies and add them to the system PATH:
@@ -65,7 +67,7 @@ scrcpy --version
 ./scrcpy-gui.exe
 
 # Or build and run from source
-go build -o scrcpy-gui.exe ./cmd/scrcpy-gui/
+go build -ldflags "-H windowsgui" -o scrcpy-gui.exe ./cmd/scrcpy-gui/ 2>&1
 ./scrcpy-gui.exe
 ```
 
@@ -93,14 +95,14 @@ go build -o scrcpy-gui.exe ./cmd/scrcpy-gui/
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/zaaack/scrcpy-gui.git
 cd scrcpy-gui
 
 # Install dependencies
 go mod tidy
 
 # Build
-go build -o scrcpy-gui.exe ./cmd/scrcpy-gui/
+go build -ldflags "-H windowsgui" -o scrcpy-gui.exe ./cmd/scrcpy-gui/ 2>&1
 ```
 
 ## Troubleshooting

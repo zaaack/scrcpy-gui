@@ -2,8 +2,6 @@ package main
 
 import (
 	"log"
-	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -37,11 +35,6 @@ func main() {
 	// 窗口初始化后强制回收一次，释放启动阶段的临时内存
 	runtime.GC()
 	debug.FreeOSMemory()
-
-	// 启动 pprof，访问 http://localhost:6060/debug/pprof/heap 查看堆内存
-	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
-	}()
 
 	app.Main()
 }

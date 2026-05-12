@@ -36,6 +36,7 @@ type Toolbar struct {
 	window   *app.Window
 	buttons  []Button
 	theme    *material.Theme
+	title    string
 	running  bool
 	mu       sync.Mutex
 	stopCh   chan struct{}
@@ -113,10 +114,13 @@ func (t *Toolbar) Run() error {
 	}
 	t.running = true
 	t.mu.Unlock()
-	
+
+	// 使用设备序列号生成唯一窗口标题，避免多个工具栏窗口混淆
+	t.title = fmt.Sprintf("Scrcpy Toolbar - %s", t.instance.GetSerial())
+
 	// 创建窗口
 	t.window = new(app.Window)
-	t.window.Option(app.Title("Scrcpy Toolbar"))
+	t.window.Option(app.Title(t.title))
 	t.window.Option(app.Size(unit.Dp(120), unit.Dp(500)))
 	
 	// 启动位置跟踪goroutine
@@ -140,7 +144,7 @@ func (t *Toolbar) waitForWindowAndHideTaskbar() {
 	maxAttempts := 50
 	for i := 0; i < maxAttempts; i++ {
 		time.Sleep(50 * time.Millisecond)
-		toolbarHandle, err := t.tracker.FindWindow("Scrcpy Toolbar")
+		toolbarHandle, err := t.tracker.FindWindow(t.title)
 		if err == nil {
 			t.tracker.HideFromTaskbar(toolbarHandle)
 			return
@@ -189,14 +193,14 @@ func (t *Toolbar) updatePosition() {
 	if err != nil {
 		return
 	}
-	
+
 	// 计算工具栏位置（scrcpy窗口右侧）
 	toolbarX := scrcpyX + scrcpyWidth + 5
 	toolbarY := scrcpyY
 	toolbarWidth := 240
 
-	// 获取工具栏窗口句柄（通过窗口标题查找）
-	toolbarHandle, err := t.tracker.FindWindow("Scrcpy Toolbar")
+	// 获取工具栏窗口句柄（通过唯一标题查找）
+	toolbarHandle, err := t.tracker.FindWindow(t.title)
 	if err != nil {
 		return
 	}
@@ -207,20 +211,17 @@ func (t *Toolbar) updatePosition() {
 		return
 	}
 
-	// 设置工具栏位置
-	t.tracker.SetWindowPos(toolbarHandle, toolbarX, toolbarY, toolbarWidth, toolbarHeight)
-	
 	// 检查scrcpy窗口是否在前台
 	scrcpyHandle := uintptr(t.instance.GetWindowHandle())
 	if scrcpyHandle == 0 {
 		return
 	}
-	
+
 	foregroundHandle := t.tracker.GetForegroundWindow()
 	isScrcpyForeground := (foregroundHandle == scrcpyHandle)
 	isToolbarForeground := (foregroundHandle == toolbarHandle)
 	isScrcpyMinimized := t.tracker.IsWindowMinimized(scrcpyHandle)
-	
+
 	if isScrcpyMinimized {
 		// 如果scrcpy最小化，工具栏也最小化
 		t.tracker.SetWindowPosWithZOrder(toolbarHandle, 0, 0, 0, 0, 0, 0x0040) // SWP_HIDEWINDOW
