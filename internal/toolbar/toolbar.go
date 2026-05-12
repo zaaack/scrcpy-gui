@@ -11,6 +11,7 @@ import (
 
 	"gioui.org/app"
 	"gioui.org/font/gofont"
+	"gioui.org/io/system"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/text"
@@ -146,16 +147,18 @@ func (t *Toolbar) Run() error {
 func (t *Toolbar) Stop() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	
+
 	if !t.running {
 		return
 	}
-	
+
 	close(t.stopCh)
 	t.running = false
-	
-	// 发送关闭事件 - 在Gio中，我们需要通过事件循环来关闭窗口
-	// 这里我们设置一个标志，让事件循环退出
+
+	// 关闭Gio窗口
+	if t.window != nil {
+		t.window.Perform(system.ActionClose)
+	}
 }
 
 // trackWindow 跟踪scrcpy窗口位置
@@ -176,7 +179,7 @@ func (t *Toolbar) trackWindow() {
 // updatePosition 更新工具栏位置和层级
 func (t *Toolbar) updatePosition() {
 	// 获取scrcpy窗口位置
-	scrcpyX, scrcpyY, scrcpyWidth, scrcpyHeight, err := t.instance.GetWindowRect()
+	scrcpyX, scrcpyY, scrcpyWidth, _, err := t.instance.GetWindowRect()
 	if err != nil {
 		return
 	}
@@ -185,14 +188,19 @@ func (t *Toolbar) updatePosition() {
 	toolbarX := scrcpyX + scrcpyWidth + 5
 	toolbarY := scrcpyY
 	toolbarWidth := 240
-	toolbarHeight := scrcpyHeight
-	
+
 	// 获取工具栏窗口句柄（通过窗口标题查找）
 	toolbarHandle, err := t.tracker.FindWindow("Scrcpy Toolbar")
 	if err != nil {
 		return
 	}
-	
+
+	// 获取工具栏当前实际高度（保持初始Gio布局的高度，不跟随scrcpy窗口变化）
+	_, _, _, toolbarHeight, err := t.tracker.GetWindowRect(toolbarHandle)
+	if err != nil {
+		return
+	}
+
 	// 设置工具栏位置
 	t.tracker.SetWindowPos(toolbarHandle, toolbarX, toolbarY, toolbarWidth, toolbarHeight)
 	

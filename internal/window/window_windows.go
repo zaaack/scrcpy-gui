@@ -6,19 +6,23 @@ import (
 	"fmt"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/lxn/win"
 )
 
 // WindowsTracker Windows平台的窗口跟踪器
 type WindowsTracker struct {
-	user32 *syscall.LazyDLL
+	user32        *syscall.LazyDLL
+	mapVirtualKey *syscall.LazyProc
 }
 
 // NewTracker 创建Windows平台的窗口跟踪器
 func NewTracker() Tracker {
+	dll := syscall.NewLazyDLL("user32.dll")
 	return &WindowsTracker{
-		user32: syscall.NewLazyDLL("user32.dll"),
+		user32:        dll,
+		mapVirtualKey: dll.NewProc("MapVirtualKeyW"),
 	}
 }
 
@@ -74,66 +78,87 @@ func (t *WindowsTracker) IsWindowVisible(handle uintptr) (bool, error) {
 	return win.IsWindowVisible(hwnd), nil
 }
 
+// getScanCode 通过MapVirtualKey获取虚拟键码对应的扫描码
+func (t *WindowsTracker) getScanCode(vk uint16) uint16 {
+	ret, _, _ := t.mapVirtualKey.Call(uintptr(vk), 0)
+	return uint16(ret)
+}
+
+// sendInputKeys 使用SendInput发送一组按键（按下+松开），模拟硬件级输入
+// SendInput会更新系统物理按键状态表，比PostMessage更可靠，SDL窗口能正确接收
+func (t *WindowsTracker) sendInputKeys(hwnd win.HWND, keys ...uint16) error {
+	// 先将目标窗口设为前台
+	win.SetForegroundWindow(hwnd)
+	time.Sleep(50 * time.Millisecond)
+
+	for _, vk := range keys {
+		scan := t.getScanCode(vk)
+		flags := uint32(0)
+		// 左箭头是扩展键，需要设置KEYEVENTF_EXTENDEDKEY标志
+		if vk == win.VK_LEFT || vk == win.VK_RIGHT || vk == win.VK_UP || vk == win.VK_DOWN {
+			flags |= win.KEYEVENTF_EXTENDEDKEY
+		}
+
+		down := win.KEYBD_INPUT{
+			Type: win.INPUT_KEYBOARD,
+			Ki: win.KEYBDINPUT{
+				WVk:     vk,
+				WScan:   scan,
+				DwFlags: flags,
+			},
+		}
+		win.SendInput(1, unsafe.Pointer(&down), int32(unsafe.Sizeof(down)))
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// 按逆序松开所有按键
+	for i := len(keys) - 1; i >= 0; i-- {
+		vk := keys[i]
+		scan := t.getScanCode(vk)
+		flags := uint32(win.KEYEVENTF_KEYUP)
+		if vk == win.VK_LEFT || vk == win.VK_RIGHT || vk == win.VK_UP || vk == win.VK_DOWN {
+			flags |= win.KEYEVENTF_EXTENDEDKEY
+		}
+
+		up := win.KEYBD_INPUT{
+			Type: win.INPUT_KEYBOARD,
+			Ki: win.KEYBDINPUT{
+				WVk:     vk,
+				WScan:   scan,
+				DwFlags: flags,
+			},
+		}
+		win.SendInput(1, unsafe.Pointer(&up), int32(unsafe.Sizeof(up)))
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	return nil
+}
+
 // SendKeyboardEvent 发送键盘事件到窗口
 func (t *WindowsTracker) SendKeyboardEvent(handle uintptr, keyCode int, ctrl bool, shift bool, alt bool) error {
-	// 对于Scrcpy快捷键，我们需要使用PostMessage发送WM_KEYDOWN和WM_KEYUP
-	// 这里简化处理，使用keybd_event模拟全局键盘事件
-	// 注意：这会影响整个系统，更好的方法是使用Scrcpy的控制协议
-	
-	// 暂时使用简单的方法：通过adb shell input keyevent发送按键
-	// 这将在scrcpy包中实现
-	
-	return nil
+	keys := []uint16{}
+	if ctrl {
+		keys = append(keys, win.VK_CONTROL)
+	}
+	if shift {
+		keys = append(keys, win.VK_SHIFT)
+	}
+	if alt {
+		keys = append(keys, win.VK_MENU)
+	}
+	keys = append(keys, uint16(keyCode))
+	return t.sendInputKeys(win.HWND(handle), keys...)
 }
 
 // SendRotateShortcut 发送旋转快捷键（Alt+Left）到窗口
 func (t *WindowsTracker) SendRotateShortcut(handle uintptr) error {
-	hwnd := win.HWND(handle)
-
-	win.SetForegroundWindow(hwnd)
-	time.Sleep(50 * time.Millisecond)
-
-	// 按下Alt
-	win.PostMessage(hwnd, win.WM_KEYDOWN, win.VK_MENU, 0)
-	time.Sleep(10 * time.Millisecond)
-
-	// 按下左箭头
-	win.PostMessage(hwnd, win.WM_KEYDOWN, win.VK_LEFT, 0)
-	time.Sleep(10 * time.Millisecond)
-
-	// 释放左箭头
-	win.PostMessage(hwnd, win.WM_KEYUP, win.VK_LEFT, 0)
-	time.Sleep(10 * time.Millisecond)
-
-	// 释放Alt
-	win.PostMessage(hwnd, win.WM_KEYUP, win.VK_MENU, 0)
-
-	return nil
+	return t.sendInputKeys(win.HWND(handle), win.VK_MENU, win.VK_LEFT)
 }
 
 // SendFullscreenShortcut 发送全屏快捷键（Alt+F）到窗口
 func (t *WindowsTracker) SendFullscreenShortcut(handle uintptr) error {
-	hwnd := win.HWND(handle)
-
-	win.SetForegroundWindow(hwnd)
-	time.Sleep(50 * time.Millisecond)
-
-	// 按下Alt
-	win.PostMessage(hwnd, win.WM_KEYDOWN, win.VK_MENU, 0)
-	time.Sleep(10 * time.Millisecond)
-
-	// 按下F键
-	win.PostMessage(hwnd, win.WM_KEYDOWN, uintptr('F'), 0)
-	time.Sleep(10 * time.Millisecond)
-
-	// 释放F键
-	win.PostMessage(hwnd, win.WM_KEYUP, uintptr('F'), 0)
-	time.Sleep(10 * time.Millisecond)
-
-	// 释放Alt
-	win.PostMessage(hwnd, win.WM_KEYUP, win.VK_MENU, 0)
-
-	return nil
+	return t.sendInputKeys(win.HWND(handle), win.VK_MENU, 'F')
 }
 
 // GetForegroundWindow 获取当前前台窗口句柄

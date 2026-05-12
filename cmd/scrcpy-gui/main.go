@@ -32,7 +32,7 @@ func main() {
 	hideConsoleWindow()
 
 	// 强制软件渲染，避免GPU驱动内存映射（RSS会下降，CPU占用上升）
-	os.Setenv("GIO_RENDERER", "software")
+//	os.Setenv("GIO_RENDERER", "software")
 
 	// 降低GC目标，减少内存占用（默认100，GUI应用数据量小可以更积极回收）
 	debug.SetGCPercent(20)
