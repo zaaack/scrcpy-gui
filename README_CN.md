@@ -4,6 +4,8 @@
 
 一个基于 Gio UI 的 scrcpy 图形界面工具，提供设备管理和悬浮工具栏控制。
 
+![Scrcpy GUI 截图](docs/pic.png)
+
 ## 前置要求
 
 在使用本工具之前，你需要手动安装以下依赖并配置到系统环境变量：
@@ -65,7 +67,7 @@ scrcpy --version
 ./scrcpy-gui.exe
 
 # 或者从源码编译运行
-go build -o scrcpy-gui.exe ./cmd/scrcpy-gui/
+go build -ldflags "-H windowsgui" -o scrcpy-gui.exe ./cmd/scrcpy-gui/ 2>&1
 ./scrcpy-gui.exe
 ```
 
@@ -93,14 +95,14 @@ go build -o scrcpy-gui.exe ./cmd/scrcpy-gui/
 
 ```bash
 # 克隆项目
-git clone <repository-url>
+git clone https://github.com/zaaack/scrcpy-gui.git
 cd scrcpy-gui
 
 # 安装依赖
 go mod tidy
 
 # 编译
-go build -o scrcpy-gui.exe ./cmd/scrcpy-gui/
+go build -ldflags "-H windowsgui" -o scrcpy-gui.exe ./cmd/scrcpy-gui/ 2>&1
 ```
 
 ## 常见问题

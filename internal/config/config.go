@@ -118,18 +118,23 @@ func (cm *ConfigManager) Save(config ScrcpyConfig) error {
 	return nil
 }
 
-// AddSavedDevice 添加保存的设备地址（去重）
+// AddSavedDevice 添加保存的设备地址（去重，最新在前，最多10个）
 func (cm *ConfigManager) AddSavedDevice(addr string) error {
 	cfg, err := cm.Load()
 	if err != nil {
 		return err
 	}
+	var result []string
+	result = append(result, addr)
 	for _, d := range cfg.SavedDevices {
-		if d == addr {
-			return nil
+		if d != addr {
+			result = append(result, d)
 		}
 	}
-	cfg.SavedDevices = append(cfg.SavedDevices, addr)
+	if len(result) > 10 {
+		result = result[:10]
+	}
+	cfg.SavedDevices = result
 	return cm.Save(cfg)
 }
 

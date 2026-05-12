@@ -36,6 +36,7 @@ type Toolbar struct {
 	window   *app.Window
 	buttons  []Button
 	theme    *material.Theme
+	title    string
 	running  bool
 	mu       sync.Mutex
 	stopCh   chan struct{}
@@ -51,31 +52,16 @@ func New(instance *scrcpy.Instance) *Toolbar {
 		theme:    theme,
 		stopCh:   make(chan struct{}),
 	}
-	
+
 	// 初始化按钮
 	t.initButtons()
-	
+
 	return t
 }
 
 // initButtons 初始化工具栏按钮
 func (t *Toolbar) initButtons() {
 	t.buttons = []Button{
-		{
-			Icon:    "Back",
-			Tooltip: "Back",
-			Action:  t.pressBack,
-		},
-		{
-			Icon:    "Home",
-			Tooltip: "Home",
-			Action:  t.pressHome,
-		},
-		{
-			Icon:    "Recent",
-			Tooltip: "Recent",
-			Action:  t.pressRecentApps,
-		},
 		{
 			Icon:    "Vol+",
 			Tooltip: "Vol+",
@@ -87,11 +73,6 @@ func (t *Toolbar) initButtons() {
 			Action:  t.pressVolumeDown,
 		},
 		{
-			Icon:    "Power",
-			Tooltip: "Power",
-			Action:  t.pressPower,
-		},
-		{
 			Icon:    "Rotate",
 			Tooltip: "Rotate",
 			Action:  t.rotate,
@@ -100,6 +81,26 @@ func (t *Toolbar) initButtons() {
 			Icon:    "Full",
 			Tooltip: "Fullscreen",
 			Action:  t.toggleFullscreen,
+		},
+		{
+			Icon:    "Power",
+			Tooltip: "Power",
+			Action:  t.pressPower,
+		},
+		{
+			Icon:    "Recent",
+			Tooltip: "Recent",
+			Action:  t.pressRecentApps,
+		},
+		{
+			Icon:    "Home",
+			Tooltip: "Home",
+			Action:  t.pressHome,
+		},
+		{
+			Icon:    "Back",
+			Tooltip: "Back",
+			Action:  t.pressBack,
 		},
 	}
 }
@@ -113,25 +114,28 @@ func (t *Toolbar) Run() error {
 	}
 	t.running = true
 	t.mu.Unlock()
-	
+
+	// 使用设备序列号生成唯一窗口标题，避免多个工具栏窗口混淆
+	t.title = fmt.Sprintf("Scrcpy Toolbar - %s", t.instance.GetSerial())
+
 	// 创建窗口
 	t.window = new(app.Window)
-	t.window.Option(app.Title("Scrcpy Toolbar"))
+	t.window.Option(app.Title(t.title))
 	t.window.Option(app.Size(unit.Dp(120), unit.Dp(500)))
-	
+
 	// 启动位置跟踪goroutine
 	go t.trackWindow()
-	
+
 	// 运行Gio事件循环
 	go func() {
 		if err := t.runWindow(); err != nil {
 			log.Printf("工具栏窗口错误: %v", err)
 		}
 	}()
-	
+
 	// 等待窗口创建后隐藏任务栏图标
 	go t.waitForWindowAndHideTaskbar()
-	
+
 	return nil
 }
 
@@ -140,7 +144,7 @@ func (t *Toolbar) waitForWindowAndHideTaskbar() {
 	maxAttempts := 50
 	for i := 0; i < maxAttempts; i++ {
 		time.Sleep(50 * time.Millisecond)
-		toolbarHandle, err := t.tracker.FindWindow("Scrcpy Toolbar")
+		toolbarHandle, err := t.tracker.FindWindow(t.title)
 		if err == nil {
 			t.tracker.HideFromTaskbar(toolbarHandle)
 			return
@@ -171,7 +175,7 @@ func (t *Toolbar) Stop() {
 func (t *Toolbar) trackWindow() {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-t.stopCh:
@@ -189,14 +193,14 @@ func (t *Toolbar) updatePosition() {
 	if err != nil {
 		return
 	}
-	
+
 	// 计算工具栏位置（scrcpy窗口右侧）
 	toolbarX := scrcpyX + scrcpyWidth + 5
 	toolbarY := scrcpyY
 	toolbarWidth := 240
 
-	// 获取工具栏窗口句柄（通过窗口标题查找）
-	toolbarHandle, err := t.tracker.FindWindow("Scrcpy Toolbar")
+	// 获取工具栏窗口句柄（通过唯一标题查找）
+	toolbarHandle, err := t.tracker.FindWindow(t.title)
 	if err != nil {
 		return
 	}
@@ -207,20 +211,17 @@ func (t *Toolbar) updatePosition() {
 		return
 	}
 
-	// 设置工具栏位置
-	t.tracker.SetWindowPos(toolbarHandle, toolbarX, toolbarY, toolbarWidth, toolbarHeight)
-	
 	// 检查scrcpy窗口是否在前台
 	scrcpyHandle := uintptr(t.instance.GetWindowHandle())
 	if scrcpyHandle == 0 {
 		return
 	}
-	
+
 	foregroundHandle := t.tracker.GetForegroundWindow()
 	isScrcpyForeground := (foregroundHandle == scrcpyHandle)
 	isToolbarForeground := (foregroundHandle == toolbarHandle)
 	isScrcpyMinimized := t.tracker.IsWindowMinimized(scrcpyHandle)
-	
+
 	if isScrcpyMinimized {
 		// 如果scrcpy最小化，工具栏也最小化
 		t.tracker.SetWindowPosWithZOrder(toolbarHandle, 0, 0, 0, 0, 0, 0x0040) // SWP_HIDEWINDOW
@@ -237,7 +238,7 @@ func (t *Toolbar) updatePosition() {
 // runWindow 运行窗口事件循环
 func (t *Toolbar) runWindow() error {
 	var ops op.Ops
-	
+
 	for {
 		select {
 		case <-t.stopCh:
@@ -264,7 +265,7 @@ func (t *Toolbar) layout(gtx layout.Context) layout.Dimensions {
 			btn.Action()
 		}
 	}
-	
+
 	// 使用Inset添加内边距
 	return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		// 创建垂直布局
@@ -289,7 +290,7 @@ func (t *Toolbar) layout(gtx layout.Context) layout.Dimensions {
 // layoutButtons 布局按钮
 func (t *Toolbar) layoutButtons(gtx layout.Context) layout.Dimensions {
 	var children []layout.FlexChild
-	
+
 	theme := t.theme
 	for i := range t.buttons {
 		btn := &t.buttons[i]
@@ -306,7 +307,7 @@ func (t *Toolbar) layoutButtons(gtx layout.Context) layout.Dimensions {
 			}),
 		)
 	}
-	
+
 	return layout.Flex{
 		Axis:    layout.Vertical,
 		Spacing: layout.SpaceEvenly,

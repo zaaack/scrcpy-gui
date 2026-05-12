@@ -100,3 +100,21 @@ func DisconnectDevice(addr string) error {
 	_, err := cmd.CombinedOutput()
 	return err
 }
+
+// InstallAPK 安装APK到指定设备，通过onProgress回调输出进度
+func InstallAPK(serial, apkPath string, onProgress func(string)) error {
+	onProgress("正在安装...")
+	cmd := noWindowCmd("adb", "-s", serial, "install", "-r", apkPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		onProgress("安装失败: " + string(output))
+		return fmt.Errorf("安装APK失败: %s, %w", strings.TrimSpace(string(output)), err)
+	}
+	out := strings.TrimSpace(string(output))
+	if strings.Contains(out, "Success") {
+		onProgress("安装成功")
+		return nil
+	}
+	onProgress("安装失败: " + out)
+	return fmt.Errorf("安装APK失败: %s", out)
+}

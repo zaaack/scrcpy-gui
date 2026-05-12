@@ -1,6 +1,7 @@
 package main_window
 
 import (
+	"fmt"
 	"image/color"
 	"log"
 	"strings"
@@ -19,14 +20,17 @@ import (
 	"scrcpy-gui/internal/config"
 	"scrcpy-gui/internal/scrcpy"
 	"scrcpy-gui/internal/toolbar"
+	"scrcpy-gui/internal/window"
 )
 
 // DeviceItem 表示设备列表中的一项
 type DeviceItem struct {
-	Device    adb.Device
-	Running   bool
-	startBtn  widget.Clickable
-	stopBtn   widget.Clickable
+	Device     adb.Device
+	Running    bool
+	startBtn   widget.Clickable
+	stopBtn    widget.Clickable
+	menuBtn    widget.Clickable
+	installBtn widget.Clickable
 }
 
 // Window 主窗口
@@ -39,8 +43,19 @@ type Window struct {
 	refreshBtn    widget.Clickable
 	ipEditor      widget.Editor
 	connectBtn    widget.Clickable
+	historyBtn    widget.Clickable
 	theme         *material.Theme
 	mu            sync.Mutex
+
+	installing         map[string]bool
+	installMsgs        map[string]string
+	menuOpenFor        string
+	pendingInstall string
+
+	showHistory      bool
+	historyItems     []string
+	deleteBtns       map[string]*widget.Clickable
+	historyClickables map[string]*widget.Clickable
 }
 
 // New 创建主窗口
@@ -52,6 +67,10 @@ func New(configManager *config.ConfigManager) *Window {
 		instances:     make(map[string]*scrcpy.Instance),
 		toolbars:      make(map[string]*toolbar.Toolbar),
 		theme:         theme,
+		installing:         make(map[string]bool),
+		installMsgs:        make(map[string]string),
+		deleteBtns:         make(map[string]*widget.Clickable),
+		historyClickables:  make(map[string]*widget.Clickable),
 	}
 }
 
@@ -65,6 +84,7 @@ func (w *Window) Run() {
 	w.ipEditor.Submit = true
 
 	w.refreshDevices()
+	w.loadHistory()
 
 	go func() {
 		if err := w.runWindow(); err != nil {
@@ -144,6 +164,7 @@ func (w *Window) layout(gtx layout.Context) layout.Dimensions {
 
 	if w.refreshBtn.Clicked(gtx) {
 		w.refreshDevices()
+		w.loadHistory()
 	}
 
 	if w.connectBtn.Clicked(gtx) {
@@ -161,7 +182,14 @@ func (w *Window) layout(gtx layout.Context) layout.Dimensions {
 		}
 	}
 
-	// 检查每个设备的启动/停止按钮
+	if w.historyBtn.Clicked(gtx) {
+		w.showHistory = !w.showHistory
+		if w.showHistory {
+			w.loadHistory()
+		}
+	}
+
+	// 检查每个设备的按钮
 	w.mu.Lock()
 	for i := range w.devices {
 		item := &w.devices[i]
@@ -173,8 +201,44 @@ func (w *Window) layout(gtx layout.Context) layout.Dimensions {
 			serial := item.Device.Serial
 			go w.stopScrcpy(serial)
 		}
+		if item.menuBtn.Clicked(gtx) {
+			serial := item.Device.Serial
+			if w.menuOpenFor == serial {
+				w.menuOpenFor = ""
+			} else {
+				w.menuOpenFor = serial
+			}
+		}
+		if item.installBtn.Clicked(gtx) {
+			serial := item.Device.Serial
+			w.menuOpenFor = ""
+			if !w.installing[serial] {
+				w.pendingInstall = serial
+			}
+		}
 	}
 	w.mu.Unlock()
+
+	// 检查历史记录删除按钮
+	for addr, btn := range w.deleteBtns {
+		if btn.Clicked(gtx) {
+			w.handleHistoryDelete(addr)
+		}
+	}
+
+	// 检查历史记录点击
+	for addr, btn := range w.historyClickables {
+		if btn.Clicked(gtx) {
+			w.handleHistorySelect(addr)
+		}
+	}
+
+	// 在主线程中处理文件选择对话框
+	if w.pendingInstall != "" {
+		serial := w.pendingInstall
+		w.pendingInstall = ""
+		w.handleInstallAPK(serial)
+	}
 
 	return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{
@@ -201,34 +265,124 @@ func (w *Window) layout(gtx layout.Context) layout.Dimensions {
 	})
 }
 
-// layoutIPInput 布局IP输入行
+// layoutIPInput 布局IP输入行（含历史下拉框）
 func (w *Window) layoutIPInput(gtx layout.Context, theme *material.Theme) layout.Dimensions {
 	return layout.Flex{
-		Axis:    layout.Horizontal,
+		Axis:    layout.Vertical,
 		Spacing: layout.SpaceEnd,
 	}.Layout(gtx,
-		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return widget.Border{
-					Color:        color.NRGBA{R: 128, G: 128, B: 128, A: 255},
-					Width:        unit.Dp(1),
-					CornerRadius: unit.Dp(4),
-				}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					editor := material.Editor(theme, &w.ipEditor, "IP address (e.g. 192.168.1.100:5555)")
-					return layout.UniformInset(unit.Dp(8)).Layout(gtx, editor.Layout)
-				})
-			})
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{
+				Axis:    layout.Horizontal,
+				Spacing: layout.SpaceEnd,
+			}.Layout(gtx,
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return widget.Border{
+							Color:        color.NRGBA{R: 128, G: 128, B: 128, A: 255},
+							Width:        unit.Dp(1),
+							CornerRadius: unit.Dp(4),
+						}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							editor := material.Editor(theme, &w.ipEditor, "IP address (e.g. 192.168.1.100:5555)")
+							return layout.UniformInset(unit.Dp(8)).Layout(gtx, editor.Layout)
+						})
+					})
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{
+						Axis: layout.Horizontal,
+					}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Right: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								return material.Button(theme, &w.connectBtn, "Connect").Layout(gtx)
+							})
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return material.Button(theme, &w.historyBtn, "▼").Layout(gtx)
+						}),
+					)
+				}),
+			)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return material.Button(theme, &w.connectBtn, "Connect").Layout(gtx)
+			return w.layoutHistoryDropdown(gtx, theme)
 		}),
 	)
+}
+
+// layoutHistoryDropdown 布局历史连接下拉框
+func (w *Window) layoutHistoryDropdown(gtx layout.Context, theme *material.Theme) layout.Dimensions {
+	if !w.showHistory || len(w.historyItems) == 0 {
+		return layout.Dimensions{}
+	}
+
+	var children []layout.FlexChild
+	for _, addr := range w.historyItems {
+		a := addr
+		delBtn, exists := w.deleteBtns[a]
+		if !exists {
+			delBtn = &widget.Clickable{}
+			w.deleteBtns[a] = delBtn
+		}
+		rowBtn, exists := w.historyClickables[a]
+		if !exists {
+			rowBtn = &widget.Clickable{}
+			w.historyClickables[a] = rowBtn
+		}
+		children = append(children,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				if rowBtn.Clicked(gtx) {
+					w.handleHistorySelect(a)
+				}
+				return layout.Inset{
+					Left:   unit.Dp(8),
+					Right:  unit.Dp(8),
+					Top:    unit.Dp(4),
+					Bottom: unit.Dp(4),
+				}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{
+						Axis:    layout.Horizontal,
+						Spacing: layout.SpaceBetween,
+					}.Layout(gtx,
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+							return material.Button(theme, rowBtn, a).Layout(gtx)
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							if delBtn.Clicked(gtx) {
+								w.handleHistoryDelete(a)
+							}
+							return layout.Inset{Left: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								return material.Button(theme, delBtn, "✕").Layout(gtx)
+							})
+						}),
+					)
+				})
+			}),
+		)
+	}
+
+	return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return widget.Border{
+			Color:        color.NRGBA{R: 180, G: 180, B: 180, A: 255},
+			Width:        unit.Dp(1),
+			CornerRadius: unit.Dp(4),
+		}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{
+					Axis: layout.Vertical,
+				}.Layout(gtx, children...)
+			})
+		})
+	})
 }
 
 // layoutDeviceList 布局设备列表
 func (w *Window) layoutDeviceList(gtx layout.Context, theme *material.Theme) layout.Dimensions {
 	w.mu.Lock()
 	devices := w.devices
+	menuOpenFor := w.menuOpenFor
+	installing := w.installing
+	installMsgs := w.installMsgs
 	w.mu.Unlock()
 
 	if len(devices) == 0 {
@@ -241,6 +395,10 @@ func (w *Window) layoutDeviceList(gtx layout.Context, theme *material.Theme) lay
 		serial := item.Device.Serial
 		model := item.Device.Model
 		running := item.Running
+		isOnline := item.Device.Status == "device"
+		isInstalling := installing[serial]
+		statusMsg := installMsgs[serial]
+		menuOpen := menuOpenFor == serial
 
 		children = append(children,
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -257,19 +415,64 @@ func (w *Window) layoutDeviceList(gtx layout.Context, theme *material.Theme) lay
 							return material.Body1(theme, label).Layout(gtx)
 						}),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							if running {
-								return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-									return material.Button(theme, &item.stopBtn, "Stop").Layout(gtx)
-								})
-							}
-							return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								return material.Button(theme, &item.startBtn, "Start").Layout(gtx)
-							})
+							return layout.Flex{
+								Axis: layout.Horizontal,
+							}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									if running {
+										return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+											return material.Button(theme, &item.stopBtn, "Stop").Layout(gtx)
+										})
+									}
+									return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+										return material.Button(theme, &item.startBtn, "Start").Layout(gtx)
+									})
+								}),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return layout.Inset{Left: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+										btn := material.Button(theme, &item.menuBtn, "More")
+										btn.TextSize = unit.Sp(14)
+										return btn.Layout(gtx)
+									})
+								}),
+							)
 						}),
 					)
 				})
 			}),
 		)
+
+		if menuOpen && isOnline {
+			children = append(children,
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Left: unit.Dp(16), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return widget.Border{
+							Color:        color.NRGBA{R: 180, G: 180, B: 180, A: 255},
+							Width:        unit.Dp(1),
+							CornerRadius: unit.Dp(4),
+						}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								btnText := "Install APK"
+								if isInstalling {
+									btnText = "Installing..."
+								}
+								return material.Button(theme, &item.installBtn, btnText).Layout(gtx)
+							})
+						})
+					})
+				}),
+			)
+		}
+
+		if statusMsg != "" {
+			children = append(children,
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Left: unit.Dp(16), Top: unit.Dp(1), Bottom: unit.Dp(1)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return material.Caption(theme, statusMsg).Layout(gtx)
+					})
+				}),
+			)
+		}
 	}
 
 	return layout.Flex{
@@ -332,7 +535,7 @@ func (w *Window) startScrcpy(serial string) {
 	cfg.WindowTitle = serial
 
 	instance := scrcpy.NewInstance(serial, cfg)
-	
+
 	// 设置退出回调，当scrcpy退出时自动停止工具栏
 	instance.SetOnExit(func() {
 		w.mu.Lock()
@@ -351,7 +554,7 @@ func (w *Window) startScrcpy(serial string) {
 		w.mu.Unlock()
 		log.Printf("scrcpy退出，已清理工具栏: 设备 %s", serial)
 	})
-	
+
 	if err := instance.Start(); err != nil {
 		log.Printf("启动scrcpy失败: %v", err)
 		return
@@ -407,4 +610,83 @@ func (w *Window) stopScrcpy(serial string) {
 	w.mu.Unlock()
 
 	log.Printf("停止scrcpy和工具栏: 设备 %s", serial)
+}
+
+// loadHistory 加载历史连接记录
+func (w *Window) loadHistory() {
+	if w.configManager == nil {
+		return
+	}
+	cfg, err := w.configManager.Load()
+	if err != nil {
+		log.Printf("加载历史记录失败: %v", err)
+		return
+	}
+	w.historyItems = cfg.SavedDevices
+}
+
+// handleHistorySelect 选择历史记录项（填充并自动连接）
+func (w *Window) handleHistorySelect(addr string) {
+	w.showHistory = false
+	w.ipEditor.SetText(addr)
+	w.handleConnect()
+}
+
+// handleHistoryDelete 删除历史记录项
+func (w *Window) handleHistoryDelete(addr string) {
+	if w.configManager == nil {
+		return
+	}
+	if err := w.configManager.RemoveSavedDevice(addr); err != nil {
+		log.Printf("删除历史记录失败: %v", err)
+		return
+	}
+	delete(w.deleteBtns, addr)
+	w.loadHistory()
+	w.refreshDevices()
+}
+
+// handleInstallAPK 处理安装APK（在主线程中调用，打开文件对话框后异步安装）
+func (w *Window) handleInstallAPK(serial string) {
+	w.mu.Lock()
+	if w.installing[serial] {
+		w.mu.Unlock()
+		return
+	}
+	w.installing[serial] = true
+	w.installMsgs[serial] = ""
+	w.mu.Unlock()
+
+	path, err := window.OpenFileDialog("选择APK文件", "APK Files (*.apk)\x00*.apk\x00All Files (*.*)\x00*.*\x00")
+	if err != nil {
+		w.mu.Lock()
+		w.installing[serial] = false
+		w.installMsgs[serial] = "已取消"
+		w.mu.Unlock()
+		return
+	}
+
+	w.mu.Lock()
+	w.installMsgs[serial] = fmt.Sprintf("正在安装: %s", path)
+	w.mu.Unlock()
+
+	go func() {
+		defer func() {
+			w.mu.Lock()
+			w.installing[serial] = false
+			w.mu.Unlock()
+		}()
+
+		err = adb.InstallAPK(serial, path, func(msg string) {
+			w.mu.Lock()
+			w.installMsgs[serial] = msg
+			w.mu.Unlock()
+		})
+
+		if err != nil {
+			log.Printf("安装APK失败: %v", err)
+		} else {
+			log.Printf("安装APK成功: %s -> %s", serial, path)
+		}
+	}()
 }
