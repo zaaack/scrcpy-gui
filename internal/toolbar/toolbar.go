@@ -3,10 +3,8 @@ package toolbar
 import (
 	"fmt"
 	"log"
-	"os/exec"
 	"strconv"
 	"sync"
-	"syscall"
 	"time"
 
 	"gioui.org/app"
@@ -132,15 +130,23 @@ func (t *Toolbar) Run() error {
 	}()
 	
 	// 等待窗口创建后隐藏任务栏图标
-	go func() {
-		time.Sleep(500 * time.Millisecond)
+	go t.waitForWindowAndHideTaskbar()
+	
+	return nil
+}
+
+// waitForWindowAndHideTaskbar 等待窗口创建并隐藏任务栏图标
+func (t *Toolbar) waitForWindowAndHideTaskbar() {
+	maxAttempts := 50
+	for i := 0; i < maxAttempts; i++ {
+		time.Sleep(50 * time.Millisecond)
 		toolbarHandle, err := t.tracker.FindWindow("Scrcpy Toolbar")
 		if err == nil {
 			t.tracker.HideFromTaskbar(toolbarHandle)
+			return
 		}
-	}()
-	
-	return nil
+	}
+	log.Printf("警告: 未找到工具栏窗口，无法隐藏任务栏图标")
 }
 
 // Stop 停止工具栏
@@ -310,8 +316,7 @@ func (t *Toolbar) layoutButtons(gtx layout.Context) layout.Dimensions {
 // sendAdbKeyEvent 发送ADB按键事件
 func (t *Toolbar) sendAdbKeyEvent(keyCode int) error {
 	serial := t.instance.GetSerial()
-	cmd := exec.Command("adb", "-s", serial, "shell", "input", "keyevent", strconv.Itoa(keyCode))
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000}
+	cmd := newNoWindowCmd("adb", "-s", serial, "shell", "input", "keyevent", strconv.Itoa(keyCode))
 	return cmd.Run()
 }
 

@@ -4,13 +4,10 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
-	"syscall"
 )
 
 func noWindowCmd(name string, args ...string) *exec.Cmd {
-	cmd := exec.Command(name, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000}
-	return cmd
+	return newNoWindowCmd(name, args...)
 }
 
 // Device 表示一个ADB设备

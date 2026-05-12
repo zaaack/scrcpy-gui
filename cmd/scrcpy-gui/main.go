@@ -7,26 +7,12 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
-	"syscall"
 
 	"gioui.org/app"
 
 	"scrcpy-gui/internal/config"
 	"scrcpy-gui/internal/main_window"
 )
-
-var (
-	kernel32         = syscall.NewLazyDLL("kernel32.dll")
-	getConsoleWindow = kernel32.NewProc("GetConsoleWindow")
-	showWindow       = syscall.NewLazyDLL("user32.dll").NewProc("ShowWindow")
-)
-
-func hideConsoleWindow() {
-	hwnd, _, _ := getConsoleWindow.Call()
-	if hwnd != 0 {
-		showWindow.Call(hwnd, 0) // SW_HIDE = 0
-	}
-}
 
 func main() {
 	hideConsoleWindow()

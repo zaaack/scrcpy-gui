@@ -5,7 +5,6 @@ import (
 	"log"
 	"os/exec"
 	"sync"
-	"syscall"
 	"time"
 
 	"scrcpy-gui/internal/config"
@@ -49,7 +48,7 @@ func (inst *Instance) Start() error {
 	
 	// 创建命令
 	inst.cmd = exec.Command("scrcpy", args...)
-	inst.cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000} // CREATE_NO_WINDOW
+	setNoWindowAttr(inst.cmd)
 	
 	// 启动进程
 	if err := inst.cmd.Start(); err != nil {
