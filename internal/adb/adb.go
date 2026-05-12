@@ -1,0 +1,105 @@
+package adb
+
+import (
+	"fmt"
+	"os/exec"
+	"strings"
+	"syscall"
+)
+
+func noWindowCmd(name string, args ...string) *exec.Cmd {
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000}
+	return cmd
+}
+
+// Device 表示一个ADB设备
+type Device struct {
+	Serial   string // 设备序列号
+	Model    string // 设备型号
+	Status   string // 设备状态
+	TransportID string // 传输ID
+}
+
+// ListDevices 返回已连接的设备列表
+func ListDevices() ([]Device, error) {
+	cmd := noWindowCmd("adb", "devices", "-l")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("执行adb devices失败: %w", err)
+	}
+
+	return parseDevicesOutput(string(output))
+}
+
+// parseDevicesOutput 解析adb devices -l的输出
+func parseDevicesOutput(output string) ([]Device, error) {
+	lines := strings.Split(output, "\n")
+	var devices []Device
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "List of devices") || strings.HasPrefix(line, "*") {
+			continue
+		}
+
+		// 解析设备行
+		// 格式: <serial> <status> <properties>
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+
+		device := Device{
+			Serial: parts[0],
+			Status: parts[1],
+		}
+
+		// 解析属性
+		for _, part := range parts[2:] {
+			if strings.HasPrefix(part, "model:") {
+				device.Model = strings.TrimPrefix(part, "model:")
+			} else if strings.HasPrefix(part, "transport_id:") {
+				device.TransportID = strings.TrimPrefix(part, "transport_id:")
+			}
+		}
+
+		// 只添加已授权的设备
+		if device.Status == "device" {
+			devices = append(devices, device)
+		}
+	}
+
+	return devices, nil
+}
+
+// GetDeviceModel 获取设备型号（如果未在属性中找到）
+func GetDeviceModel(serial string) (string, error) {
+	cmd := noWindowCmd("adb", "-s", serial, "shell", "getprop", "ro.product.model")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("获取设备型号失败: %w", err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// ConnectDevice 连接到指定IP的设备
+func ConnectDevice(addr string) error {
+	cmd := noWindowCmd("adb", "connect", addr)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("连接设备失败: %s, %w", strings.TrimSpace(string(output)), err)
+	}
+	out := strings.TrimSpace(string(output))
+	if !strings.HasPrefix(out, "connected") && !strings.HasPrefix(out, "already connected") {
+		return fmt.Errorf("连接设备失败: %s", out)
+	}
+	return nil
+}
+
+// DisconnectDevice 断开指定IP的设备
+func DisconnectDevice(addr string) error {
+	cmd := noWindowCmd("adb", "disconnect", addr)
+	_, err := cmd.CombinedOutput()
+	return err
+}
