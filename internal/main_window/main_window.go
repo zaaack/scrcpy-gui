@@ -1,9 +1,11 @@
 package main_window
 
 import (
+	"errors"
 	"fmt"
 	"image/color"
 	"log"
+	"os"
 	"strings"
 	"sync"
 
@@ -15,12 +17,12 @@ import (
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
+	"gioui.org/x/explorer"
 
 	"scrcpy-gui/internal/adb"
 	"scrcpy-gui/internal/config"
 	"scrcpy-gui/internal/scrcpy"
 	"scrcpy-gui/internal/toolbar"
-	"scrcpy-gui/internal/window"
 )
 
 // DeviceItem 表示设备列表中的一项
@@ -40,6 +42,7 @@ type Window struct {
 	instances     map[string]*scrcpy.Instance
 	toolbars      map[string]*toolbar.Toolbar
 	window        *app.Window
+	exp           *explorer.Explorer
 	refreshBtn    widget.Clickable
 	ipEditor      widget.Editor
 	connectBtn    widget.Clickable
@@ -50,7 +53,6 @@ type Window struct {
 	installing         map[string]bool
 	installMsgs        map[string]string
 	menuOpenFor        string
-	pendingInstall string
 
 	showHistory      bool
 	historyItems     []string
@@ -79,6 +81,7 @@ func (w *Window) Run() {
 	w.window = new(app.Window)
 	w.window.Option(app.Title("Scrcpy GUI - Devices"))
 	w.window.Option(app.Size(unit.Dp(400), unit.Dp(400)))
+	w.exp = explorer.NewExplorer(w.window)
 
 	w.ipEditor.SingleLine = true
 	w.ipEditor.Submit = true
@@ -147,7 +150,9 @@ func (w *Window) runWindow() error {
 	var ops op.Ops
 
 	for {
-		switch e := w.window.Event().(type) {
+		e := w.window.Event()
+		w.exp.ListenEvents(e)
+		switch e := e.(type) {
 		case app.DestroyEvent:
 			return e.Err
 		case app.FrameEvent:
@@ -213,7 +218,7 @@ func (w *Window) layout(gtx layout.Context) layout.Dimensions {
 			serial := item.Device.Serial
 			w.menuOpenFor = ""
 			if !w.installing[serial] {
-				w.pendingInstall = serial
+				go w.handleInstallAPK(serial)
 			}
 		}
 	}
@@ -231,13 +236,6 @@ func (w *Window) layout(gtx layout.Context) layout.Dimensions {
 		if btn.Clicked(gtx) {
 			w.handleHistorySelect(addr)
 		}
-	}
-
-	// 在主线程中处理文件选择对话框
-	if w.pendingInstall != "" {
-		serial := w.pendingInstall
-		w.pendingInstall = ""
-		w.handleInstallAPK(serial)
 	}
 
 	return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
@@ -646,7 +644,7 @@ func (w *Window) handleHistoryDelete(addr string) {
 	w.refreshDevices()
 }
 
-// handleInstallAPK 处理安装APK（在主线程中调用，打开文件对话框后异步安装）
+// handleInstallAPK 处理安装APK（在goroutine中调用，使用explorer选择文件后异步安装）
 func (w *Window) handleInstallAPK(serial string) {
 	w.mu.Lock()
 	if w.installing[serial] {
@@ -657,11 +655,27 @@ func (w *Window) handleInstallAPK(serial string) {
 	w.installMsgs[serial] = ""
 	w.mu.Unlock()
 
-	path, err := window.OpenFileDialog("选择APK文件", "APK Files (*.apk)\x00*.apk\x00All Files (*.*)\x00*.*\x00")
+	f, err := w.exp.ChooseFile(".apk")
 	if err != nil {
 		w.mu.Lock()
 		w.installing[serial] = false
-		w.installMsgs[serial] = "已取消"
+		if !errors.Is(err, explorer.ErrUserDecline) {
+			w.installMsgs[serial] = fmt.Sprintf("选择文件失败: %v", err)
+		}
+		w.mu.Unlock()
+		return
+	}
+
+	var path string
+	if of, ok := f.(*os.File); ok {
+		path = of.Name()
+	}
+	f.Close()
+
+	if path == "" {
+		w.mu.Lock()
+		w.installing[serial] = false
+		w.installMsgs[serial] = "无法获取文件路径"
 		w.mu.Unlock()
 		return
 	}
@@ -670,23 +684,21 @@ func (w *Window) handleInstallAPK(serial string) {
 	w.installMsgs[serial] = fmt.Sprintf("正在安装: %s", path)
 	w.mu.Unlock()
 
-	go func() {
-		defer func() {
-			w.mu.Lock()
-			w.installing[serial] = false
-			w.mu.Unlock()
-		}()
-
-		err = adb.InstallAPK(serial, path, func(msg string) {
-			w.mu.Lock()
-			w.installMsgs[serial] = msg
-			w.mu.Unlock()
-		})
-
-		if err != nil {
-			log.Printf("安装APK失败: %v", err)
-		} else {
-			log.Printf("安装APK成功: %s -> %s", serial, path)
-		}
+	defer func() {
+		w.mu.Lock()
+		w.installing[serial] = false
+		w.mu.Unlock()
 	}()
+
+	err = adb.InstallAPK(serial, path, func(msg string) {
+		w.mu.Lock()
+		w.installMsgs[serial] = msg
+		w.mu.Unlock()
+	})
+
+	if err != nil {
+		log.Printf("安装APK失败: %v", err)
+	} else {
+		log.Printf("安装APK成功: %s -> %s", serial, path)
+	}
 }
