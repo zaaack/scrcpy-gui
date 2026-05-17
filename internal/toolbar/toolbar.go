@@ -38,6 +38,7 @@ type Toolbar struct {
 	theme    *material.Theme
 	title    string
 	running  bool
+	pinned   bool
 	mu       sync.Mutex
 	stopCh   chan struct{}
 }
@@ -83,6 +84,11 @@ func (t *Toolbar) initButtons() {
 			Action:  t.toggleFullscreen,
 		},
 		{
+			Icon:    "Pin",
+			Tooltip: "TopMost",
+			Action:  t.toggleTopMost,
+		},
+		{
 			Icon:    "Power",
 			Tooltip: "Power",
 			Action:  t.pressPower,
@@ -122,6 +128,8 @@ func (t *Toolbar) Run() error {
 	t.window = new(app.Window)
 	t.window.Option(app.Title(t.title))
 	t.window.Option(app.Size(unit.Dp(120), unit.Dp(500)))
+	t.window.Option(app.MaxSize(unit.Dp(120), unit.Dp(500)))
+	t.window.Option(app.MinSize(unit.Dp(120), unit.Dp(500)))
 
 	// 启动位置跟踪goroutine
 	go t.trackWindow()
@@ -197,7 +205,6 @@ func (t *Toolbar) updatePosition() {
 	// 计算工具栏位置（scrcpy窗口右侧）
 	toolbarX := scrcpyX + scrcpyWidth + 5
 	toolbarY := scrcpyY
-	toolbarWidth := 240
 
 	// 获取工具栏窗口句柄（通过唯一标题查找）
 	toolbarHandle, err := t.tracker.FindWindow(t.title)
@@ -205,8 +212,8 @@ func (t *Toolbar) updatePosition() {
 		return
 	}
 
-	// 获取工具栏当前实际高度（保持初始Gio布局的高度，不跟随scrcpy窗口变化）
-	_, _, _, toolbarHeight, err := t.tracker.GetWindowRect(toolbarHandle)
+	// 获取工具栏当前实际尺寸（保持初始Gio布局的尺寸，不跟随scrcpy窗口变化）
+	_, _, toolbarWidth, toolbarHeight, err := t.tracker.GetWindowRect(toolbarHandle)
 	if err != nil {
 		return
 	}
@@ -367,5 +374,28 @@ func (t *Toolbar) rotate() {
 func (t *Toolbar) toggleFullscreen() {
 	if err := t.instance.ToggleFullscreen(); err != nil {
 		log.Printf("发送全屏快捷键失败: %v", err)
+	}
+}
+
+func (t *Toolbar) toggleTopMost() {
+	scrcpyHandle := uintptr(t.instance.GetWindowHandle())
+	if scrcpyHandle == 0 {
+		log.Printf("获取scrcpy窗口句柄失败")
+		return
+	}
+
+	t.mu.Lock()
+	t.pinned = !t.pinned
+	pinned := t.pinned
+	t.mu.Unlock()
+
+	if pinned {
+		if !t.tracker.SetTopMost(scrcpyHandle) {
+			log.Printf("设置窗口置顶失败")
+		}
+	} else {
+		if !t.tracker.UnsetTopMost(scrcpyHandle) {
+			log.Printf("取消窗口置顶失败")
+		}
 	}
 }

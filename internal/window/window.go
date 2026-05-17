@@ -40,6 +40,12 @@ type Tracker interface {
 	
 	// HideFromTaskbar 隐藏窗口在任务栏中的显示
 	HideFromTaskbar(handle uintptr)
+
+	// SetTopMost 设置窗口为置顶
+	SetTopMost(handle uintptr) bool
+
+	// UnsetTopMost 取消窗口置顶
+	UnsetTopMost(handle uintptr) bool
 }
 
 // KeyCode 键码常量

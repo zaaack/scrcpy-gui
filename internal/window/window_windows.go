@@ -199,3 +199,15 @@ func (t *WindowsTracker) HideFromTaskbar(handle uintptr) {
 	// 设置新的扩展样式
 	win.SetWindowLong(hwnd, win.GWL_EXSTYLE, style)
 }
+
+// SetTopMost 设置窗口为置顶
+func (t *WindowsTracker) SetTopMost(handle uintptr) bool {
+	hwnd := win.HWND(handle)
+	return win.SetWindowPos(hwnd, win.HWND_TOPMOST, 0, 0, 0, 0, win.SWP_NOMOVE|win.SWP_NOSIZE|win.SWP_NOACTIVATE)
+}
+
+// UnsetTopMost 取消窗口置顶
+func (t *WindowsTracker) UnsetTopMost(handle uintptr) bool {
+	hwnd := win.HWND(handle)
+	return win.SetWindowPos(hwnd, win.HWND_NOTOPMOST, 0, 0, 0, 0, win.SWP_NOMOVE|win.SWP_NOSIZE|win.SWP_NOACTIVATE)
+}

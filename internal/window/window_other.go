@@ -76,3 +76,13 @@ func (t *OtherTracker) SetWindowPosWithZOrder(handle uintptr, insertAfter uintpt
 func (t *OtherTracker) HideFromTaskbar(handle uintptr) {
 	// 其他平台不支持
 }
+
+// SetTopMost 设置窗口为置顶
+func (t *OtherTracker) SetTopMost(handle uintptr) bool {
+	return false
+}
+
+// UnsetTopMost 取消窗口置顶
+func (t *OtherTracker) UnsetTopMost(handle uintptr) bool {
+	return false
+}
