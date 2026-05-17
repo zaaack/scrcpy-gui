@@ -1,3 +1,3 @@
-//go:generate go build -ldflags "-H windowsgui -s -w" -o scrcpy-gui.exe ./cmd/scrcpy-gui/
+//go:generate gogio -o scrcpy-gui.exe -icon assets/icon.png -target windows ./cmd/scrcpy-gui/
 
 package main

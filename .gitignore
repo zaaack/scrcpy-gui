@@ -1,6 +1,7 @@
 # Windows executables
 *.exe
 *.exe~
+*.syso
 
 # Go build outputs
 *.out
