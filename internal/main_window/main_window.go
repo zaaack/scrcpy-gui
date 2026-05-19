@@ -168,8 +168,11 @@ func (w *Window) layout(gtx layout.Context) layout.Dimensions {
 	theme := w.theme
 
 	if w.refreshBtn.Clicked(gtx) {
-		w.refreshDevices()
-		w.loadHistory()
+		go func() {
+			w.refreshDevices()
+			w.loadHistory()
+			w.window.Invalidate()
+		}()
 	}
 
 	if w.connectBtn.Clicked(gtx) {
@@ -513,14 +516,6 @@ func (w *Window) handleConnect() {
 
 // startScrcpy 启动scrcpy实例
 func (w *Window) startScrcpy(serial string) {
-	w.mu.Lock()
-	if _, exists := w.instances[serial]; exists {
-		w.mu.Unlock()
-		log.Printf("设备 %s 已有scrcpy实例运行", serial)
-		return
-	}
-	w.mu.Unlock()
-
 	cfg := config.DefaultConfig()
 	if w.configManager != nil {
 		var err error
@@ -529,19 +524,18 @@ func (w *Window) startScrcpy(serial string) {
 			log.Printf("加载配置失败: %v", err)
 		}
 	}
-
 	cfg.WindowTitle = serial
 
 	instance := scrcpy.NewInstance(serial, cfg)
+	tb := toolbar.New(instance)
 
 	// 设置退出回调，当scrcpy退出时自动停止工具栏
 	instance.SetOnExit(func() {
 		w.mu.Lock()
-		if tb, exists := w.toolbars[serial]; exists {
-			tb.Stop()
+		if existTb, exists := w.toolbars[serial]; exists {
+			existTb.Stop()
 			delete(w.toolbars, serial)
 		}
-		// 更新设备运行状态
 		for i := range w.devices {
 			if w.devices[i].Device.Serial == serial {
 				w.devices[i].Running = false
@@ -553,14 +547,15 @@ func (w *Window) startScrcpy(serial string) {
 		log.Printf("scrcpy退出，已清理工具栏: 设备 %s", serial)
 	})
 
-	if err := instance.Start(); err != nil {
-		log.Printf("启动scrcpy失败: %v", err)
+	// 先注册到 map 再启动，避免 onExit 在注册前触发导致僵尸 toolbar
+	w.mu.Lock()
+	if _, exists := w.instances[serial]; exists {
+		w.mu.Unlock()
+		log.Printf("设备 %s 已有scrcpy实例运行", serial)
 		return
 	}
-
-	w.mu.Lock()
 	w.instances[serial] = instance
-	// 更新设备运行状态
+	w.toolbars[serial] = tb
 	for i := range w.devices {
 		if w.devices[i].Device.Serial == serial {
 			w.devices[i].Running = true
@@ -569,12 +564,25 @@ func (w *Window) startScrcpy(serial string) {
 	}
 	w.mu.Unlock()
 
-	tb := toolbar.New(instance)
+	if err := instance.Start(); err != nil {
+		log.Printf("启动scrcpy失败: %v", err)
+		w.mu.Lock()
+		delete(w.instances, serial)
+		delete(w.toolbars, serial)
+		for i := range w.devices {
+			if w.devices[i].Device.Serial == serial {
+				w.devices[i].Running = false
+				break
+			}
+		}
+		w.mu.Unlock()
+		return
+	}
+
 	if err := tb.Run(); err != nil {
 		log.Printf("启动工具栏失败: %v", err)
-	} else {
 		w.mu.Lock()
-		w.toolbars[serial] = tb
+		delete(w.toolbars, serial)
 		w.mu.Unlock()
 	}
 

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs grep -l \"onExit\\\\|SetOnExit\")",
+      "Bash(rtk ls *)",
+      "Bash(rtk grep *)",
+      "Bash(rtk tree *)",
+      "Bash(rtk go *)",
+      "Bash(/c/Users/admin/AppData/Local/Programs/scrcpy-gui/go/bin/go.exe build *)"
+    ]
+  }
+}

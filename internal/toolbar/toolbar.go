@@ -118,6 +118,13 @@ func (t *Toolbar) Run() error {
 		t.mu.Unlock()
 		return fmt.Errorf("工具栏已在运行")
 	}
+	// 如果已经被停止过（stopCh 已关闭），不再启动
+	select {
+	case <-t.stopCh:
+		t.mu.Unlock()
+		return fmt.Errorf("工具栏已停止")
+	default:
+	}
 	t.running = true
 	t.mu.Unlock()
 
@@ -247,29 +254,25 @@ func (t *Toolbar) runWindow() error {
 	var ops op.Ops
 
 	for {
-		select {
-		case <-t.stopCh:
-			return nil
-		default:
-			switch e := t.window.Event().(type) {
-			case app.DestroyEvent:
-				return e.Err
-			case app.FrameEvent:
-				gtx := app.NewContext(&ops, e)
-				t.layout(gtx)
-				e.Frame(gtx.Ops)
-			}
+		// 只通过 DestroyEvent 退出，Stop() 调用 window.Perform(ActionClose) 会触发它
+		switch e := t.window.Event().(type) {
+		case app.DestroyEvent:
+			return e.Err
+		case app.FrameEvent:
+			gtx := app.NewContext(&ops, e)
+			t.layout(gtx)
+			e.Frame(gtx.Ops)
 		}
 	}
 }
 
 // layout 布局工具栏
 func (t *Toolbar) layout(gtx layout.Context) layout.Dimensions {
-	// 检查按钮点击
+	// 检查按钮点击，动作在 goroutine 中执行避免阻塞 Gio 事件循环
 	for i := range t.buttons {
 		btn := &t.buttons[i]
 		if btn.widget.Clicked(gtx) {
-			btn.Action()
+			go btn.Action()
 		}
 	}
 
