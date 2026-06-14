@@ -23,13 +23,17 @@ jobs:
             goarch: amd64
             runner: windows-latest
             cgo: '0'
+            tags: ''
             ldflags: "-s -w -H windowsgui"
             binary: scrcpy-gui.exe
-          # Linux x64：Gio 的 X11 后端需要 CGo + X11 开发库
+          # Linux x64：Gio 的 X11 后端需要 CGo + X11 开发库。
+          # 用 nowayland 标签关闭 Wayland 后端，避免引入 wayland 依赖
+          # （工具栏窗口控制本身基于 X11，Wayland 下无窗口跟踪能力）。
           - goos: linux
             goarch: amd64
             runner: ubuntu-latest
             cgo: '1'
+            tags: 'nowayland'
             ldflags: "-s -w"
             binary: scrcpy-gui
           # macOS Apple Silicon：Gio 的 darwin 后端需要 CGo（macOS runner 自带 clang）
@@ -37,6 +41,7 @@ jobs:
             goarch: arm64
             runner: macos-latest
             cgo: '1'
+            tags: ''
             ldflags: "-s -w"
             binary: scrcpy-gui
 
@@ -70,7 +75,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: ${{ matrix.cgo }}
         run: |
-          go build -trimpath -ldflags "${{ matrix.ldflags }}" -o ${{ matrix.binary }} ./cmd/scrcpy-gui/
+          go build -trimpath -tags "${{ matrix.tags }}" -ldflags "${{ matrix.ldflags }}" -o ${{ matrix.binary }} ./cmd/scrcpy-gui/
 
       - name: Verify binary
         shell: bash
