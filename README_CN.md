@@ -8,55 +8,17 @@
 
 ## 前置要求
 
-在使用本工具之前，你需要手动安装以下依赖并配置到系统环境变量：
+首次启动时，程序会自动检测 **adb** 和 **scrcpy** 是否已安装。如果缺少任一组件，会弹出设置向导提示你从 GitHub Releases 自动下载。
 
-### 1. 安装 ADB (Android Debug Bridge)
+- **Windows** – scrcpy 的发布包通常内置 `adb.exe`，点击“下载 scrcpy”即可同时安装两者。
+- **macOS / Linux** – scrcpy 的发布包**不**包含 adb。程序会自动下载 scrcpy，但 adb 仍需单独安装（例如 `brew install android-platform-tools` 或 `apt install android-tools-adb`）。
 
-ADB 是用于与 Android 设备通信的命令行工具。
+### 手动安装（可选）
 
-**下载地址：** https://developer.android.com/tools/releases/platform-tools
+如果你希望自己管理二进制文件，可手动安装后通过 `PATH` 或自定义路径让程序自动识别：
 
-**安装步骤：**
-1. 下载对应操作系统的 Platform Tools
-2. 解压到任意目录（如 `C:\platform-tools`）
-3. 将该目录添加到系统 PATH 环境变量
-
-**验证安装：**
-```bash
-adb version
-```
-
-### 2. 安装 scrcpy
-
-scrcpy 是 Android 屏幕镜像和控制工具。
-
-**下载地址：** https://github.com/Genymobile/scrcpy/releases
-
-**安装步骤：**
-1. 从 GitHub Releases 下载最新版本
-2. 解压到任意目录（如 `C:\scrcpy`）
-3. 将该目录添加到系统 PATH 环境变量
-
-**验证安装：**
-```bash
-scrcpy --version
-```
-
-### 3. 配置环境变量
-
-**Windows 系统：**
-1. 右键"此电脑" -> "属性" -> "高级系统设置"
-2. 点击"环境变量"
-3. 在"系统变量"中找到 `Path`，点击"编辑"
-4. 添加 ADB 和 scrcpy 的安装路径
-5. 点击"确定"保存
-
-**验证配置：**
-打开新的命令行窗口，运行以下命令确认可以全局访问：
-```bash
-adb devices
-scrcpy --version
-```
+**ADB：** https://developer.android.com/tools/releases/platform-tools  
+**scrcpy：** https://github.com/Genymobile/scrcpy/releases
 
 ## 使用方法
 
@@ -107,11 +69,12 @@ go build -ldflags "-H windowsgui" -o scrcpy-gui.exe ./cmd/scrcpy-gui/ 2>&1
 
 ## 常见问题
 
-### "adb 不是内部或外部命令"
-说明 ADB 未正确安装或未添加到 PATH。请按照上述步骤重新安装并配置环境变量。
+### 首次启动提示“未检测到 adb / scrcpy”
+在设置向导中点击**下载 scrcpy**，程序会自动从 GitHub Releases 获取最新版本。
+- Windows 用户通常可以同时获得 scrcpy 和 adb。
+- macOS / Linux 用户仍需单独安装 adb，因为 scrcpy 的发布包中不包含 adb。
 
-### "scrcpy 不是内部或外部命令"
-说明 scrcpy 未正确安装或未添加到 PATH。请按照上述步骤重新安装并配置环境变量。
+如果自动下载失败（如网络问题），可参考[前置要求](#前置要求)中的**手动安装**步骤。
 
 ### 设备未显示
 1. 确保设备已开启 USB 调试
