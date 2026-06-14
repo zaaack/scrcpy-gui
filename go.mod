@@ -5,6 +5,7 @@ go 1.23.12
 require (
 	gioui.org v0.9.0
 	gioui.org/x v0.9.0
+	github.com/ebitengine/purego v0.10.1
 	github.com/lxn/win v0.0.0-20210218163916-a377121e959e
 )
 

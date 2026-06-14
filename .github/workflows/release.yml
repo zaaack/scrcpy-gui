@@ -1,0 +1,108 @@
+name: Release
+
+# 在推送 v* 标签时触发：为 Windows / Linux / macOS 编译二进制并上传到 GitHub Release。
+on:
+  push:
+    tags:
+      - 'v*'
+  # 允许手动触发用于测试构建流程（不会真正发布 Release）
+  workflow_dispatch:
+
+permissions:
+  contents: write  # softprops/action-gh-release 需要此权限创建/编辑 Release
+
+jobs:
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    strategy:
+      fail-fast: false  # 单个平台失败不阻断其它平台
+      matrix:
+        include:
+          # Windows x64：纯 Go，需要 -H windowsgui 隐藏控制台
+          - goos: windows
+            goarch: amd64
+            runner: windows-latest
+            cgo: '0'
+            ldflags: "-s -w -H windowsgui"
+            binary: scrcpy-gui.exe
+          # Linux x64：Gio 的 X11 后端需要 CGo + X11 开发库
+          - goos: linux
+            goarch: amd64
+            runner: ubuntu-latest
+            cgo: '1'
+            ldflags: "-s -w"
+            binary: scrcpy-gui
+          # macOS Apple Silicon：Gio 的 darwin 后端需要 CGo（macOS runner 自带 clang）
+          - goos: darwin
+            goarch: arm64
+            runner: macos-latest
+            cgo: '1'
+            ldflags: "-s -w"
+            binary: scrcpy-gui
+
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Install Linux build dependencies
+        if: matrix.goos == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libx11-xcb-dev \
+            libxcursor-dev \
+            libxfixes-dev \
+            pkg-config
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: ${{ matrix.cgo }}
+        run: |
+          go build -trimpath -ldflags "${{ matrix.ldflags }}" -o ${{ matrix.binary }} ./cmd/scrcpy-gui/
+
+      - name: Verify binary
+        shell: bash
+        run: |
+          ls -lh ${{ matrix.binary }}
+          file ${{ matrix.binary }} || true
+
+      # 打包成压缩包（带平台标识），便于用户识别
+      - name: Package (tar.gz)
+        if: matrix.goos != 'windows'
+        run: |
+          archive="${{ matrix.binary }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz"
+          tar -czf "$archive" ${{ matrix.binary }}
+          echo "ASSET=$archive" >> $GITHUB_ENV
+      - name: Package (zip)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          $archive = "${{ matrix.binary }}-${{ matrix.goos }}-${{ matrix.goarch }}.zip"
+          Compress-Archive -Path ${{ matrix.binary }} -DestinationPath $archive
+          "ASSET=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: ${{ matrix.binary }}
+
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true

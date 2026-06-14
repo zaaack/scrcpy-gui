@@ -15,6 +15,7 @@ import (
 type Instance struct {
 	serial    string
 	config    config.ScrcpyConfig
+	scrcpyCmd string // 实际使用的 scrcpy 命令路径，默认 "scrcpy"
 	cmd       *exec.Cmd
 	tracker   window.Tracker
 	windowHandle uintptr
@@ -27,10 +28,22 @@ type Instance struct {
 // NewInstance 创建新的scrcpy实例
 func NewInstance(serial string, cfg config.ScrcpyConfig) *Instance {
 	return &Instance{
-		serial:  serial,
-		config:  cfg,
-		tracker: window.NewTracker(),
-		stopCh:  make(chan struct{}),
+		serial:    serial,
+		config:    cfg,
+		scrcpyCmd: cfg.ScrcpyCommand(),
+		tracker:   window.NewTracker(),
+		stopCh:    make(chan struct{}),
+	}
+}
+
+// SetScrcpyCommand 设置实际使用的 scrcpy 命令路径。空字符串恢复为 "scrcpy"。
+func (inst *Instance) SetScrcpyCommand(path string) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	if path == "" {
+		inst.scrcpyCmd = "scrcpy"
+	} else {
+		inst.scrcpyCmd = path
 	}
 }
 
@@ -45,9 +58,9 @@ func (inst *Instance) Start() error {
 	
 	// 构建命令行参数
 	args := inst.config.BuildArgs(inst.serial)
-	
+
 	// 创建命令
-	inst.cmd = exec.Command("scrcpy", args...)
+	inst.cmd = exec.Command(inst.scrcpyCmd, args...)
 	setNoWindowAttr(inst.cmd)
 	
 	// 启动进程

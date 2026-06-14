@@ -37,6 +37,7 @@ type Toolbar struct {
 	buttons  []Button
 	theme    *material.Theme
 	title    string
+	adbCmd   string // 实际使用的 adb 命令路径，默认 "adb"
 	running  bool
 	pinned   bool
 	mu       sync.Mutex
@@ -46,11 +47,13 @@ type Toolbar struct {
 // New 创建新的工具栏
 func New(instance *scrcpy.Instance) *Toolbar {
 	theme := material.NewTheme()
-	theme.Shaper = text.NewShaper(text.NoSystemFonts(), text.WithCollection(gofont.Regular()))
+	// 不使用 NoSystemFonts：gofont 仅含拉丁字形，需让 Gio 回退到系统字体才能显示中文。
+	theme.Shaper = text.NewShaper(text.WithCollection(gofont.Regular()))
 	t := &Toolbar{
 		instance: instance,
 		tracker:  window.NewTracker(),
 		theme:    theme,
+		adbCmd:   "adb",
 		stopCh:   make(chan struct{}),
 	}
 
@@ -60,9 +63,25 @@ func New(instance *scrcpy.Instance) *Toolbar {
 	return t
 }
 
+// SetAdbCommand 设置实际使用的 adb 命令路径。空字符串恢复为 "adb"。
+func (t *Toolbar) SetAdbCommand(path string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if path == "" {
+		t.adbCmd = "adb"
+	} else {
+		t.adbCmd = path
+	}
+}
+
 // initButtons 初始化工具栏按钮
 func (t *Toolbar) initButtons() {
 	t.buttons = []Button{
+		{
+			Icon:    "Notify",
+			Tooltip: "Notifications",
+			Action:  t.showNotifications,
+		},
 		{
 			Icon:    "Vol+",
 			Tooltip: "Vol+",
@@ -327,7 +346,10 @@ func (t *Toolbar) layoutButtons(gtx layout.Context) layout.Dimensions {
 // sendAdbKeyEvent 发送ADB按键事件
 func (t *Toolbar) sendAdbKeyEvent(keyCode int) error {
 	serial := t.instance.GetSerial()
-	cmd := newNoWindowCmd("adb", "-s", serial, "shell", "input", "keyevent", strconv.Itoa(keyCode))
+	t.mu.Lock()
+	adb := t.adbCmd
+	t.mu.Unlock()
+	cmd := newNoWindowCmd(adb, "-s", serial, "shell", "input", "keyevent", strconv.Itoa(keyCode))
 	return cmd.Run()
 }
 
@@ -347,6 +369,12 @@ func (t *Toolbar) pressHome() {
 func (t *Toolbar) pressRecentApps() {
 	if err := t.sendAdbKeyEvent(window.KeyCodeAppSwitch); err != nil {
 		log.Printf("发送最近应用键失败: %v", err)
+	}
+}
+
+func (t *Toolbar) showNotifications() {
+	if err := t.sendAdbKeyEvent(window.KeyCodeNotification); err != nil {
+		log.Printf("展开通知栏失败: %v", err)
 	}
 }
 

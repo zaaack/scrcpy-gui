@@ -4,10 +4,34 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 func noWindowCmd(name string, args ...string) *exec.Cmd {
 	return newNoWindowCmd(name, args...)
+}
+
+// adbCmd 默认从 PATH 查找 adb；可通过 SetAdbCommand 改为自定义路径（如下载到程序目录的 adb.exe）。
+var (
+	adbCmdMu sync.RWMutex
+	adbCmd   = "adb"
+)
+
+// SetAdbCommand 设置全局使用的 adb 命令路径。空字符串表示恢复为 PATH 中的 adb。
+func SetAdbCommand(path string) {
+	adbCmdMu.Lock()
+	defer adbCmdMu.Unlock()
+	adbCmd = path
+	if adbCmd == "" {
+		adbCmd = "adb"
+	}
+}
+
+// adbCommand 返回当前生效的 adb 命令。
+func adbCommand() string {
+	adbCmdMu.RLock()
+	defer adbCmdMu.RUnlock()
+	return adbCmd
 }
 
 // Device 表示一个ADB设备
@@ -20,7 +44,7 @@ type Device struct {
 
 // ListDevices 返回已连接的设备列表
 func ListDevices() ([]Device, error) {
-	cmd := noWindowCmd("adb", "devices", "-l")
+	cmd := noWindowCmd(adbCommand(), "devices", "-l")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("执行adb devices失败: %w", err)
@@ -72,7 +96,7 @@ func parseDevicesOutput(output string) ([]Device, error) {
 
 // GetDeviceModel 获取设备型号（如果未在属性中找到）
 func GetDeviceModel(serial string) (string, error) {
-	cmd := noWindowCmd("adb", "-s", serial, "shell", "getprop", "ro.product.model")
+	cmd := noWindowCmd(adbCommand(), "-s", serial, "shell", "getprop", "ro.product.model")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("获取设备型号失败: %w", err)
@@ -82,7 +106,7 @@ func GetDeviceModel(serial string) (string, error) {
 
 // ConnectDevice 连接到指定IP的设备
 func ConnectDevice(addr string) error {
-	cmd := noWindowCmd("adb", "connect", addr)
+	cmd := noWindowCmd(adbCommand(), "connect", addr)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("连接设备失败: %s, %w", strings.TrimSpace(string(output)), err)
@@ -96,7 +120,7 @@ func ConnectDevice(addr string) error {
 
 // DisconnectDevice 断开指定IP的设备
 func DisconnectDevice(addr string) error {
-	cmd := noWindowCmd("adb", "disconnect", addr)
+	cmd := noWindowCmd(adbCommand(), "disconnect", addr)
 	_, err := cmd.CombinedOutput()
 	return err
 }
@@ -104,7 +128,7 @@ func DisconnectDevice(addr string) error {
 // InstallAPK 安装APK到指定设备，通过onProgress回调输出进度
 func InstallAPK(serial, apkPath string, onProgress func(string)) error {
 	onProgress("正在安装...")
-	cmd := noWindowCmd("adb", "-s", serial, "install", "-r", apkPath)
+	cmd := noWindowCmd(adbCommand(), "-s", serial, "install", "-r", apkPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		onProgress("安装失败: " + string(output))

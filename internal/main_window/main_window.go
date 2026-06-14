@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -23,6 +24,8 @@ import (
 	"scrcpy-gui/internal/config"
 	"scrcpy-gui/internal/scrcpy"
 	"scrcpy-gui/internal/toolbar"
+	"scrcpy-gui/internal/tools"
+	"scrcpy-gui/internal/window"
 )
 
 // DeviceItem 表示设备列表中的一项
@@ -35,7 +38,61 @@ type DeviceItem struct {
 	installBtn widget.Clickable
 }
 
-// Window 主窗口
+// setupDialogState 驱动 adb/scrcpy 缺失时弹出的设置对话框。
+//
+// 数据字段（snapshot）受 setupMu 保护，因为下载 goroutine 会通过进度回调写入它们，
+// 而窗口事件循环 goroutine 在布局时读取。widget.Clickable 按钮只在 UI goroutine 中访问。
+type setupDialogState struct {
+	// —— 受 setupMu 保护的数据 ——
+	visible        bool
+	adbOK          bool
+	scrcpyOK       bool
+	adbPath        string
+	scrcpyPath     string
+	downloadActive bool     // 是否正在下载
+	downloadPct    float32  // 下载/解压百分比，<0 表示无法计算
+	downloadMsg    string   // 阶段提示
+	downloadErr    string   // 错误信息（非空时红色显示）
+	cancelDownload chan struct{}
+
+	// —— 仅 UI goroutine 访问 ——
+	downloadBtn  widget.Clickable
+	chooseAdbBtn widget.Clickable
+	chooseScrcpy widget.Clickable
+	skipBtn      widget.Clickable
+	recheckBtn   widget.Clickable
+	cancelBtn    widget.Clickable
+}
+
+// setupSnapshot 是 setup 数据字段的只读快照，供布局使用。
+type setupSnapshot struct {
+	visible        bool
+	adbOK          bool
+	scrcpyOK       bool
+	adbPath        string
+	scrcpyPath     string
+	downloadActive bool
+	downloadPct    float32
+	downloadMsg    string
+	downloadErr    string
+}
+
+// snapshotSetup 在 setupMu 保护下读取 setup 数据字段的快照。
+func (w *Window) snapshotSetup() setupSnapshot {
+	w.setupMu.Lock()
+	defer w.setupMu.Unlock()
+	return setupSnapshot{
+		visible:        w.setup.visible,
+		adbOK:          w.setup.adbOK,
+		scrcpyOK:       w.setup.scrcpyOK,
+		adbPath:        w.setup.adbPath,
+		scrcpyPath:     w.setup.scrcpyPath,
+		downloadActive: w.setup.downloadActive,
+		downloadPct:    w.setup.downloadPct,
+		downloadMsg:    w.setup.downloadMsg,
+		downloadErr:    w.setup.downloadErr,
+	}
+}// Window 主窗口
 type Window struct {
 	configManager *config.ConfigManager
 	devices       []DeviceItem
@@ -49,6 +106,7 @@ type Window struct {
 	historyBtn    widget.Clickable
 	theme         *material.Theme
 	mu            sync.Mutex
+	setupMu       sync.Mutex // 保护 setupDialogState 字段（跨 goroutine 的下载进度更新）
 
 	installing         map[string]bool
 	installMsgs        map[string]string
@@ -58,13 +116,18 @@ type Window struct {
 	historyItems     []string
 	deleteBtns       map[string]*widget.Clickable
 	historyClickables map[string]*widget.Clickable
+
+	// adb/scrcpy 缺失时的设置对话框
+	setup setupDialogState
 }
 
 // New 创建主窗口
 func New(configManager *config.ConfigManager) *Window {
 	theme := material.NewTheme()
-	theme.Shaper = text.NewShaper(text.NoSystemFonts(), text.WithCollection(gofont.Regular()))
-	return &Window{
+	// 不使用 NoSystemFonts：gofont 仅含拉丁字形，需让 Gio 回退到系统字体（如 SimSun/YaHei）才能显示中文。
+	// 这样英文用 gofont，CJK 字形回退到系统字体。
+	theme.Shaper = text.NewShaper(text.WithCollection(gofont.Regular()))
+	w := &Window{
 		configManager: configManager,
 		instances:     make(map[string]*scrcpy.Instance),
 		toolbars:      make(map[string]*toolbar.Toolbar),
@@ -74,6 +137,29 @@ func New(configManager *config.ConfigManager) *Window {
 		deleteBtns:         make(map[string]*widget.Clickable),
 		historyClickables:  make(map[string]*widget.Clickable),
 	}
+
+	// 加载配置，初始化 adb/scrcpy 命令路径并做可用性检测
+	w.initToolPaths()
+	return w
+}
+
+// initToolPaths 根据配置设置 adb/scrcpy 命令，并检测可用性；缺失则弹出设置对话框。
+func (w *Window) initToolPaths() {
+	var cfg config.ScrcpyConfig
+	if w.configManager != nil {
+		cfg, _ = w.configManager.Load()
+	}
+	// 应用到包级/实例级配置
+	adb.SetAdbCommand(cfg.AdbCommand())
+
+	adbOK, scrcpyOK := tools.CheckAvailable(cfg.AdbPath, cfg.ScrcpyPath)
+	w.setupMu.Lock()
+	w.setup.adbOK = adbOK
+	w.setup.scrcpyOK = scrcpyOK
+	w.setup.adbPath = cfg.AdbPath
+	w.setup.scrcpyPath = cfg.ScrcpyPath
+	w.setup.visible = !(adbOK && scrcpyOK)
+	w.setupMu.Unlock()
 }
 
 // Run 运行主窗口
@@ -166,6 +252,11 @@ func (w *Window) runWindow() error {
 // layout 布局主窗口
 func (w *Window) layout(gtx layout.Context) layout.Dimensions {
 	theme := w.theme
+
+	// 若 adb/scrcpy 缺失，优先显示设置对话框
+	if w.snapshotSetup().visible {
+		return w.layoutSetupDialog(gtx, theme)
+	}
 
 	if w.refreshBtn.Clicked(gtx) {
 		go func() {
@@ -482,6 +573,403 @@ func (w *Window) layoutDeviceList(gtx layout.Context, theme *material.Theme) lay
 	}.Layout(gtx, children...)
 }
 
+// layoutSetupDialog 布局 adb/scrcpy 缺失时的设置对话框
+func (w *Window) layoutSetupDialog(gtx layout.Context, theme *material.Theme) layout.Dimensions {
+	snap := w.snapshotSetup()
+
+	// 处理按钮点击（在下载进行中禁用相关按钮）
+	if !snap.downloadActive {
+		if w.setup.downloadBtn.Clicked(gtx) {
+			go w.handleDownload()
+		}
+		if w.setup.chooseAdbBtn.Clicked(gtx) {
+			go w.handleChoosePath("adb")
+		}
+		if w.setup.chooseScrcpy.Clicked(gtx) {
+			go w.handleChoosePath("scrcpy")
+		}
+		if w.setup.skipBtn.Clicked(gtx) {
+			w.setupMu.Lock()
+			w.setup.visible = false
+			w.setupMu.Unlock()
+			w.refreshDevices()
+		}
+		if w.setup.recheckBtn.Clicked(gtx) {
+			go w.handleRecheck()
+		}
+	}
+	if snap.downloadActive {
+		if w.setup.cancelBtn.Clicked(gtx) {
+			w.handleCancelDownload()
+		}
+	}
+
+	// 状态指示
+	adbStatus := "✓ ready"
+	adbColor := color.NRGBA{R: 0, G: 128, B: 0, A: 255}
+	if !snap.adbOK {
+		adbStatus = "✗ not found"
+		adbColor = color.NRGBA{R: 200, G: 0, B: 0, A: 255}
+	}
+	scrcpyStatus := "✓ ready"
+	scrcpyColor := color.NRGBA{R: 0, G: 128, B: 0, A: 255}
+	if !snap.scrcpyOK {
+		scrcpyStatus = "✗ not found"
+		scrcpyColor = color.NRGBA{R: 200, G: 0, B: 0, A: 255}
+	}
+
+	return layout.UniformInset(unit.Dp(16)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			// 标题
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return material.H5(theme, "Setup Runtime Dependencies").Layout(gtx)
+				})
+			}),
+			// 说明
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Body1(theme, "adb / scrcpy were not detected. You can download scrcpy automatically or choose the executable paths manually.")
+					lbl.Color = color.NRGBA{R: 80, G: 80, B: 80, A: 255}
+					return lbl.Layout(gtx)
+				})
+			}),
+			// 状态行
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Body2(theme, "adb: "+adbStatus)
+					lbl.Color = adbColor
+					return lbl.Layout(gtx)
+				})
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Body2(theme, "scrcpy: "+scrcpyStatus)
+					lbl.Color = scrcpyColor
+					return lbl.Layout(gtx)
+				})
+			}),
+			// 下载进度 / 错误区
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return w.layoutDownloadArea(gtx, theme)
+			}),
+			// 按钮区
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal, Spacing: layout.SpaceEnd}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								btn := material.Button(theme, &w.setup.downloadBtn, "Download scrcpy")
+								if snap.downloadActive {
+									btn.Background = color.NRGBA{R: 180, G: 180, B: 180, A: 255}
+								}
+								return btn.Layout(gtx)
+							})
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								return material.Button(theme, &w.setup.chooseAdbBtn, "Choose adb").Layout(gtx)
+							})
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								return material.Button(theme, &w.setup.chooseScrcpy, "Choose scrcpy").Layout(gtx)
+							})
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								return material.Button(theme, &w.setup.recheckBtn, "Recheck").Layout(gtx)
+							})
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return material.Button(theme, &w.setup.skipBtn, "Skip").Layout(gtx)
+						}),
+					)
+				})
+			}),
+		)
+	})
+}
+
+// layoutDownloadArea 布局下载进度条 / 错误信息
+func (w *Window) layoutDownloadArea(gtx layout.Context, theme *material.Theme) layout.Dimensions {
+	snap := w.snapshotSetup()
+	if snap.downloadActive {
+		pct := snap.downloadPct
+		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					msg := snap.downloadMsg
+					if msg == "" {
+						msg = "Preparing..."
+					}
+					return material.Body2(theme, msg).Layout(gtx)
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						// ProgressBar 接收 0~1 的 float32；负值表示无法计算总大小
+						v := pct / 100
+						if v < 0 {
+							v = 0
+						}
+						if v > 1 {
+							v = 1
+						}
+						return material.ProgressBar(theme, v).Layout(gtx)
+					})
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							text := fmt.Sprintf("%.0f%%", pct)
+							if pct < 0 {
+								text = "..."
+							}
+							return material.Caption(theme, text).Layout(gtx)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return material.Button(theme, &w.setup.cancelBtn, "Cancel").Layout(gtx)
+						}),
+					)
+				}),
+			)
+		})
+	}
+	if snap.downloadErr != "" {
+		return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			lbl := material.Body2(theme, "Download failed: "+snap.downloadErr)
+			lbl.Color = color.NRGBA{R: 200, G: 0, B: 0, A: 255}
+			return lbl.Layout(gtx)
+		})
+	}
+	return layout.Dimensions{}
+}
+
+// handleDownload 处理下载 scrcpy 的逻辑
+func (w *Window) handleDownload() {
+	installDir, err := binInstallDir()
+	if err != nil {
+		w.setupMu.Lock()
+		w.setup.downloadErr = fmt.Sprintf("cannot locate program directory: %v", err)
+		w.setupMu.Unlock()
+		w.window.Invalidate()
+		return
+	}
+
+	cancelCh := make(chan struct{})
+	w.setupMu.Lock()
+	w.setup.downloadActive = true
+	w.setup.downloadErr = ""
+	w.setup.downloadPct = 0
+	w.setup.downloadMsg = "Preparing..."
+	w.setup.cancelDownload = cancelCh
+	w.setupMu.Unlock()
+	w.window.Invalidate()
+
+	onProgress := func(p tools.DownloadProgress) {
+		select {
+		case <-cancelCh:
+			return
+		default:
+		}
+		w.setupMu.Lock()
+		switch p.Stage {
+		case tools.StageQuery:
+			w.setup.downloadMsg = "Querying latest release from GitHub..."
+		case tools.StageFetch:
+			w.setup.downloadMsg = "Locating archive for this platform..."
+		case tools.StagePull:
+			w.setup.downloadMsg = "Downloading..."
+			w.setup.downloadPct = float32(p.Percent)
+		case tools.StageUnzip:
+			w.setup.downloadMsg = "Extracting..."
+			w.setup.downloadPct = float32(p.Percent)
+		case tools.StageError:
+			w.setup.downloadErr = p.Message
+		}
+		w.setupMu.Unlock()
+		w.window.Invalidate()
+	}
+
+	adbRel, scrcpyRel, derr := tools.DownloadScrcpy(installDir, onProgress)
+
+	select {
+	case <-cancelCh:
+		w.setupMu.Lock()
+		w.setup.downloadActive = false
+		w.setup.downloadMsg = "Cancelled"
+		w.setupMu.Unlock()
+		w.window.Invalidate()
+		return
+	default:
+	}
+
+	if derr != nil {
+		w.setupMu.Lock()
+		w.setup.downloadActive = false
+		if w.setup.downloadErr == "" {
+			w.setup.downloadErr = derr.Error()
+		}
+		w.setupMu.Unlock()
+		w.window.Invalidate()
+		return
+	}
+
+	// 解析绝对路径
+	scrcpyAbs := ""
+	if scrcpyRel != "" {
+		scrcpyAbs = filepath.Join(installDir, scrcpyRel)
+	}
+	adbAbs := ""
+	if adbRel != "" {
+		adbAbs = filepath.Join(installDir, adbRel)
+	}
+
+	adbOK, scrcpyOK := tools.CheckAvailable(adbAbs, scrcpyAbs)
+
+	w.setupMu.Lock()
+	w.setup.downloadActive = false
+	w.setup.scrcpyPath = scrcpyAbs
+	w.setup.adbPath = adbAbs
+	w.setup.adbOK = adbOK
+	w.setup.scrcpyOK = scrcpyOK
+	w.setup.downloadMsg = "Done"
+	allOK := adbOK && scrcpyOK
+	w.setupMu.Unlock()
+
+	w.persistToolPaths()
+	if allOK {
+		w.setupMu.Lock()
+		w.setup.visible = false
+		w.setupMu.Unlock()
+		w.refreshDevices()
+	}
+	w.window.Invalidate()
+}
+
+// handleChoosePath 处理手动选择 adb.exe / scrcpy.exe 路径
+func (w *Window) handleChoosePath(which string) {
+	var path string
+	var derr error
+	if which == "adb" {
+		path, derr = window.OpenFileDialog("Choose adb.exe", "adb.exe (adb.exe)|adb.exe|Executables (*.exe)|*.exe|All files|*.*")
+	} else {
+		path, derr = window.OpenFileDialog("Choose scrcpy.exe", "scrcpy.exe (scrcpy.exe)|scrcpy.exe|Executables (*.exe)|*.exe|All files|*.*")
+	}
+	if derr != nil {
+		// 用户取消或出错，回到对话框
+		w.window.Invalidate()
+		return
+	}
+
+	w.setupMu.Lock()
+	if which == "adb" {
+		w.setup.adbPath = path
+	} else {
+		w.setup.scrcpyPath = path
+	}
+	adbPath := w.setup.adbPath
+	scrcpyPath := w.setup.scrcpyPath
+	w.setupMu.Unlock()
+
+	adbOK, scrcpyOK := tools.CheckAvailable(adbPath, scrcpyPath)
+
+	w.setupMu.Lock()
+	w.setup.adbOK = adbOK
+	w.setup.scrcpyOK = scrcpyOK
+	allOK := adbOK && scrcpyOK
+	w.setupMu.Unlock()
+
+	w.persistToolPaths()
+	if allOK {
+		w.setupMu.Lock()
+		w.setup.visible = false
+		w.setupMu.Unlock()
+		w.refreshDevices()
+	}
+	w.window.Invalidate()
+}
+
+// handleRecheck 重新检测 adb/scrcpy 可用性
+func (w *Window) handleRecheck() {
+	w.setupMu.Lock()
+	adbPath := w.setup.adbPath
+	scrcpyPath := w.setup.scrcpyPath
+	w.setupMu.Unlock()
+
+	// 先把当前路径应用到 adb 包（保证 adb 包使用最新路径）
+	adbCommand := "adb"
+	if adbPath != "" {
+		adbCommand = adbPath
+	}
+	adb.SetAdbCommand(adbCommand)
+	// scrcpy 路径在创建实例时才生效，这里仅刷新状态
+
+	adbOK, scrcpyOK := tools.CheckAvailable(adbPath, scrcpyPath)
+
+	w.setupMu.Lock()
+	w.setup.adbOK = adbOK
+	w.setup.scrcpyOK = scrcpyOK
+	allOK := adbOK && scrcpyOK
+	w.setupMu.Unlock()
+
+	if allOK {
+		w.setupMu.Lock()
+		w.setup.visible = false
+		w.setupMu.Unlock()
+		w.refreshDevices()
+	}
+	w.window.Invalidate()
+}
+
+// handleCancelDownload 取消正在进行的下载
+func (w *Window) handleCancelDownload() {
+	w.setupMu.Lock()
+	ch := w.setup.cancelDownload
+	w.setup.cancelDownload = nil
+	w.setupMu.Unlock()
+	if ch != nil {
+		select {
+		case <-ch:
+		default:
+			close(ch)
+		}
+	}
+}
+
+// persistToolPaths 把当前 setup 中的 adb/scrcpy 路径保存到配置文件
+func (w *Window) persistToolPaths() {
+	if w.configManager == nil {
+		return
+	}
+	cfg, err := w.configManager.Load()
+	if err != nil {
+		log.Printf("加载配置失败: %v", err)
+		return
+	}
+	w.setupMu.Lock()
+	cfg.AdbPath = w.setup.adbPath
+	cfg.ScrcpyPath = w.setup.scrcpyPath
+	w.setupMu.Unlock()
+	if err := w.configManager.Save(cfg); err != nil {
+		log.Printf("保存配置失败: %v", err)
+		return
+	}
+	// 让 adb 包即时生效
+	adb.SetAdbCommand(cfg.AdbCommand())
+}
+
+// binInstallDir 返回程序目录下的 bin\ 子目录（用于解压 scrcpy）。
+func binInstallDir() (string, error) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Dir(exePath)
+	return filepath.Join(dir, "bin", "scrcpy"), nil
+}
+
 // handleConnect 处理手动连接
 func (w *Window) handleConnect() {
 	addr := strings.TrimSpace(w.ipEditor.Text())
@@ -528,6 +1016,8 @@ func (w *Window) startScrcpy(serial string) {
 
 	instance := scrcpy.NewInstance(serial, cfg)
 	tb := toolbar.New(instance)
+	// 让工具栏使用配置中的 adb 命令路径（默认为 "adb"，使用 PATH）
+	tb.SetAdbCommand(cfg.AdbCommand())
 
 	// 设置退出回调，当scrcpy退出时自动停止工具栏
 	instance.SetOnExit(func() {

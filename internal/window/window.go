@@ -50,11 +50,11 @@ type Tracker interface {
 
 // KeyCode 键码常量
 const (
-	KeyCodeBack      = 4   // 返回键
-	KeyCodeHome      = 3   // Home键
-	KeyCodeAppSwitch = 187 // 最近应用键
-	KeyCodeVolumeUp  = 24  // 音量增加
-	KeyCodeVolumeDown = 25 // 音量减少
-	KeyCodePower     = 26  // 电源键
+	KeyCodeBack         = 4   // 返回键
+	KeyCodeHome         = 3   // Home键
+	KeyCodeAppSwitch    = 187 // 最近应用键
+	KeyCodeNotification = 83  // 展开通知栏
+	KeyCodeVolumeUp     = 24  // 音量增加
+	KeyCodeVolumeDown   = 25  // 音量减少
+	KeyCodePower        = 26  // 电源键
 )
-

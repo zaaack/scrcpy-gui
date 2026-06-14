@@ -9,6 +9,10 @@ import (
 
 // ScrcpyConfig 表示scrcpy的配置参数
 type ScrcpyConfig struct {
+	// 命令路径（空表示使用PATH中的adb/scrcpy）
+	AdbPath    string `json:"adb_path"`    // 自定义adb可执行文件路径
+	ScrcpyPath string `json:"scrcpy_path"` // 自定义scrcpy可执行文件路径
+
 	// 基本参数
 	MaxSize   int    `json:"max_size"`   // 最大尺寸（0表示默认）
 	BitRate   int    `json:"bit_rate"`   // 比特率（Mbps）
@@ -53,6 +57,22 @@ func DefaultConfig() ScrcpyConfig {
 		StayAwake:       false,
 		TurnScreenOff:   false,
 	}
+}
+
+// AdbCommand 返回应使用的adb命令（自定义路径或默认"adb"）
+func (c ScrcpyConfig) AdbCommand() string {
+	if c.AdbPath != "" {
+		return c.AdbPath
+	}
+	return "adb"
+}
+
+// ScrcpyCommand 返回应使用的scrcpy命令（自定义路径或默认"scrcpy"）
+func (c ScrcpyConfig) ScrcpyCommand() string {
+	if c.ScrcpyPath != "" {
+		return c.ScrcpyPath
+	}
+	return "scrcpy"
 }
 
 // ConfigManager 管理配置的保存和加载
