@@ -138,6 +138,8 @@ type Window struct {
 	connectBtn    widget.Clickable
 	historyBtn    widget.Clickable
 	theme         *material.Theme
+	list          layout.List
+	setupList     layout.List
 	mu            sync.Mutex
 	setupMu       sync.Mutex // 保护 setupDialogState 字段（跨 goroutine 的下载进度更新）
 
@@ -403,28 +405,31 @@ func (w *Window) layout(gtx layout.Context) layout.Dimensions {
 		}
 	}
 
-	return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		return layout.Flex{
-			Axis: layout.Vertical,
-		}.Layout(gtx,
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				title := material.H5(theme, "Scrcpy GUI")
-				return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, title.Layout)
-			}),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					return material.Button(theme, &w.refreshBtn, "Refresh").Layout(gtx)
-				})
-			}),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					return w.layoutIPInput(gtx, theme)
-				})
-			}),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return w.layoutDeviceList(gtx, theme)
-			}),
-		)
+	w.list.Axis = layout.Vertical
+	return w.list.Layout(gtx, 1, func(gtx layout.Context, i int) layout.Dimensions {
+		return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{
+				Axis: layout.Vertical,
+			}.Layout(gtx,
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					title := material.H5(theme, "Scrcpy GUI")
+					return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, title.Layout)
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return material.Button(theme, &w.refreshBtn, "Refresh").Layout(gtx)
+					})
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return w.layoutIPInput(gtx, theme)
+					})
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return w.layoutDeviceList(gtx, theme)
+				}),
+			)
+		})
 	})
 }
 
@@ -788,76 +793,71 @@ func (w *Window) layoutSetupDialog(gtx layout.Context, theme *material.Theme) la
 		scrcpyColor = color.NRGBA{R: 200, G: 0, B: 0, A: 255}
 	}
 
-	return layout.UniformInset(unit.Dp(16)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-			// 标题
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					return material.H5(theme, "Setup Runtime Dependencies").Layout(gtx)
-				})
-			}),
-			// 说明
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Body1(theme, "adb / scrcpy were not detected. You can download scrcpy automatically or choose the executable paths manually.")
-					lbl.Color = color.NRGBA{R: 80, G: 80, B: 80, A: 255}
-					return lbl.Layout(gtx)
-				})
-			}),
-			// 状态行
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Body2(theme, "adb: "+adbStatus)
-					lbl.Color = adbColor
-					return lbl.Layout(gtx)
-				})
-			}),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Body2(theme, "scrcpy: "+scrcpyStatus)
-					lbl.Color = scrcpyColor
-					return lbl.Layout(gtx)
-				})
-			}),
-			// 下载进度 / 错误区
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return w.layoutDownloadArea(gtx, theme)
-			}),
-			// 按钮区
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					return layout.Flex{Axis: layout.Horizontal, Spacing: layout.SpaceEnd}.Layout(gtx,
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	w.setupList.Axis = layout.Vertical
+	return w.setupList.Layout(gtx, 1, func(gtx layout.Context, i int) layout.Dimensions {
+		return layout.UniformInset(unit.Dp(16)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				// 标题
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return material.H5(theme, "Setup Runtime Dependencies").Layout(gtx)
+					})
+				}),
+				// 说明
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Body1(theme, "adb / scrcpy were not detected. You can download scrcpy automatically or choose the executable paths manually.")
+						lbl.Color = color.NRGBA{R: 80, G: 80, B: 80, A: 255}
+						return lbl.Layout(gtx)
+					})
+				}),
+				// 状态行
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Bottom: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Body2(theme, "adb: "+adbStatus)
+						lbl.Color = adbColor
+						return lbl.Layout(gtx)
+					})
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Bottom: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Body2(theme, "scrcpy: "+scrcpyStatus)
+						lbl.Color = scrcpyColor
+						return lbl.Layout(gtx)
+					})
+				}),
+				// 下载进度 / 错误区
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return w.layoutDownloadArea(gtx, theme)
+				}),
+				// 按钮区
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return w.layoutWrap(gtx, theme, []func(gtx layout.Context) layout.Dimensions{
+							func(gtx layout.Context) layout.Dimensions {
 								btn := material.Button(theme, &w.setup.downloadBtn, "Download scrcpy")
 								if snap.downloadActive {
 									btn.Background = color.NRGBA{R: 180, G: 180, B: 180, A: 255}
 								}
 								return btn.Layout(gtx)
-							})
-						}),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							},
+							func(gtx layout.Context) layout.Dimensions {
 								return material.Button(theme, &w.setup.chooseAdbBtn, "Choose adb").Layout(gtx)
-							})
-						}),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							},
+							func(gtx layout.Context) layout.Dimensions {
 								return material.Button(theme, &w.setup.chooseScrcpy, "Choose scrcpy").Layout(gtx)
-							})
-						}),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							},
+							func(gtx layout.Context) layout.Dimensions {
 								return material.Button(theme, &w.setup.recheckBtn, "Recheck").Layout(gtx)
-							})
-						}),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return material.Button(theme, &w.setup.skipBtn, "Skip").Layout(gtx)
-						}),
-					)
-				})
-			}),
-		)
+							},
+							func(gtx layout.Context) layout.Dimensions {
+								return material.Button(theme, &w.setup.skipBtn, "Skip").Layout(gtx)
+							},
+						}, gtx.Dp(8))
+					})
+				}),
+			)
+		})
 	})
 }
 
