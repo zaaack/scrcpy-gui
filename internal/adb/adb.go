@@ -142,3 +142,19 @@ func InstallAPK(serial, apkPath string, onProgress func(string)) error {
 	onProgress("安装失败: " + out)
 	return fmt.Errorf("安装APK失败: %s", out)
 }
+
+// SetResolution 通过adb shell wm size设置设备分辨率
+func SetResolution(serial string, width, height int) error {
+	var args []string
+	if width == 0 && height == 0 {
+		args = []string{"-s", serial, "shell", "wm", "size", "reset"}
+	} else {
+		args = []string{"-s", serial, "shell", "wm", "size", fmt.Sprintf("%dx%d", width, height)}
+	}
+	cmd := noWindowCmd(adbCommand(), args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("设置分辨率失败: %s, %w", strings.TrimSpace(string(output)), err)
+	}
+	return nil
+}

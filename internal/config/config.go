@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ScrcpyConfig 表示scrcpy的配置参数
@@ -33,7 +34,13 @@ type ScrcpyConfig struct {
 	ShowTouches     bool `json:"show_touches"`     // 是否显示触摸
 	StayAwake       bool `json:"stay_awake"`       // 是否保持唤醒
 	TurnScreenOff   bool `json:"turn_screen_off"`  // 是否关闭屏幕
-	
+
+	// 自定义参数
+	ExtraArgs              string   `json:"extra_args"`               // 额外的scrcpy参数
+	CustomResolutions      []string `json:"custom_resolutions"`       // 保存的自定义分辨率（scrcpy --max-size）
+	DeviceResolution       string   `json:"device_resolution"`        // 设备分辨率，如 "1080x1920"
+	CustomDeviceResolutions []string `json:"custom_device_resolutions"` // 保存的自定义设备分辨率
+
 	// 保存的手动连接设备
 	SavedDevices []string `json:"saved_devices"` // 保存的设备地址列表
 }
@@ -228,6 +235,12 @@ func (config ScrcpyConfig) BuildArgs(serial string) []string {
 	if config.TurnScreenOff {
 		args = append(args, "--turn-screen-off")
 	}
-	
+
+	// 额外参数
+	if config.ExtraArgs != "" {
+		extra := strings.Fields(config.ExtraArgs)
+		args = append(args, extra...)
+	}
+
 	return args
 }

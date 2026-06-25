@@ -3,6 +3,7 @@ package main_window
 import (
 	"errors"
 	"fmt"
+	"image"
 	"image/color"
 	"log"
 	"os"
@@ -36,6 +37,8 @@ type DeviceItem struct {
 	stopBtn    widget.Clickable
 	menuBtn    widget.Clickable
 	installBtn widget.Clickable
+	argsBtn    widget.Clickable
+	resBtn     widget.Clickable
 }
 
 // setupDialogState 驱动 adb/scrcpy 缺失时弹出的设置对话框。
@@ -92,7 +95,37 @@ func (w *Window) snapshotSetup() setupSnapshot {
 		downloadMsg:    w.setup.downloadMsg,
 		downloadErr:    w.setup.downloadErr,
 	}
-}// Window 主窗口
+}
+
+// resolutionOption 表示分辨率选项
+type resolutionOption struct {
+	label  string
+	width  int
+	height int // width=0, height=0 表示 Original (reset)
+}
+
+// settingsDialog 管理设备设置弹窗状态
+type settingsDialog struct {
+	dialogType   string // "", "args", "resolution"
+	dialogSerial string
+
+	// Custom Args 对话框
+	argsEd     widget.Editor
+	argsSave   widget.Clickable
+	argsCancel widget.Clickable
+
+	// Resolution 对话框
+	resSelectedW int
+	resSelectedH int
+	resClicks    map[string]*widget.Clickable
+	resOptions   []resolutionOption
+	resAddEd     widget.Editor
+	resAddBtn    widget.Clickable
+	resSave      widget.Clickable
+	resCancel    widget.Clickable
+}
+
+// Window 主窗口
 type Window struct {
 	configManager *config.ConfigManager
 	devices       []DeviceItem
@@ -119,6 +152,9 @@ type Window struct {
 
 	// adb/scrcpy 缺失时的设置对话框
 	setup setupDialogState
+
+	// 设备设置弹窗
+	dialog settingsDialog
 }
 
 // New 创建主窗口
@@ -306,6 +342,7 @@ func (w *Window) layout(gtx layout.Context) layout.Dimensions {
 				w.menuOpenFor = ""
 			} else {
 				w.menuOpenFor = serial
+				w.dialog.dialogType = ""
 			}
 		}
 		if item.installBtn.Clicked(gtx) {
@@ -314,6 +351,16 @@ func (w *Window) layout(gtx layout.Context) layout.Dimensions {
 			if !w.installing[serial] {
 				go w.handleInstallAPK(serial)
 			}
+		}
+		if item.argsBtn.Clicked(gtx) {
+			serial := item.Device.Serial
+			w.menuOpenFor = ""
+			w.openArgsDialog(serial)
+		}
+		if item.resBtn.Clicked(gtx) {
+			serial := item.Device.Serial
+			w.menuOpenFor = ""
+			w.openResDialog(serial)
 		}
 	}
 	w.mu.Unlock()
@@ -329,6 +376,30 @@ func (w *Window) layout(gtx layout.Context) layout.Dimensions {
 	for addr, btn := range w.historyClickables {
 		if btn.Clicked(gtx) {
 			w.handleHistorySelect(addr)
+		}
+	}
+
+	// 检查设置弹窗按钮
+	if w.dialog.dialogType != "" {
+		if w.dialog.argsSave.Clicked(gtx) {
+			w.saveArgs()
+		}
+		if w.dialog.argsCancel.Clicked(gtx) {
+			w.dialog.dialogType = ""
+		}
+		if w.dialog.resSave.Clicked(gtx) {
+			w.saveResolution()
+		}
+		if w.dialog.resCancel.Clicked(gtx) {
+			w.dialog.dialogType = ""
+		}
+		if w.dialog.resAddBtn.Clicked(gtx) {
+			w.addCustomResolution()
+		}
+		for k, btn := range w.dialog.resClicks {
+			if btn.Clicked(gtx) {
+				fmt.Sscanf(k, "%dx%d", &w.dialog.resSelectedW, &w.dialog.resSelectedH)
+			}
 		}
 	}
 
@@ -543,17 +614,36 @@ func (w *Window) layoutDeviceList(gtx layout.Context, theme *material.Theme) lay
 							Width:        unit.Dp(1),
 							CornerRadius: unit.Dp(4),
 						}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								btnText := "Install APK"
-								if isInstalling {
-									btnText = "Installing..."
-								}
-								return material.Button(theme, &item.installBtn, btnText).Layout(gtx)
-							})
+						return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							return w.layoutWrap(gtx, theme, []func(gtx layout.Context) layout.Dimensions{
+								func(gtx layout.Context) layout.Dimensions {
+									btnText := "Install APK"
+									if isInstalling {
+										btnText = "Installing..."
+									}
+									return material.Button(theme, &item.installBtn, btnText).Layout(gtx)
+								},
+								func(gtx layout.Context) layout.Dimensions {
+									return material.Button(theme, &item.argsBtn, "Custom Args").Layout(gtx)
+								},
+								func(gtx layout.Context) layout.Dimensions {
+									return material.Button(theme, &item.resBtn, "Resolution").Layout(gtx)
+								},
+							}, gtx.Dp(8))
+						})
 						})
 					})
 				}),
 			)
+		}
+
+		if w.dialog.dialogType != "" && w.dialog.dialogSerial == serial {
+			switch w.dialog.dialogType {
+			case "args":
+				children = append(children, w.layoutArgsDialog(gtx, theme))
+			case "resolution":
+				children = append(children, w.layoutResDialog(gtx, theme))
+			}
 		}
 
 		if statusMsg != "" {
@@ -571,6 +661,86 @@ func (w *Window) layoutDeviceList(gtx layout.Context, theme *material.Theme) lay
 		Axis:    layout.Vertical,
 		Spacing: layout.SpaceEnd,
 	}.Layout(gtx, children...)
+}
+
+// layoutWrap 横向自动换行布局
+func (w *Window) layoutWrap(gtx layout.Context, theme *material.Theme, widgets []func(gtx layout.Context) layout.Dimensions, spacing int) layout.Dimensions {
+	type item struct {
+		fn   func(gtx layout.Context) layout.Dimensions
+		size layout.Dimensions
+	}
+	items := make([]item, len(widgets))
+
+	// 第一遍：测量每个 widget 的宽度
+	var totalW int
+	for i, fn := range widgets {
+		gtx2 := gtx
+		gtx2.Constraints = layout.Constraints{Min: image.Point{}, Max: image.Point{X: 1<<30, Y: 1<<30}}
+		sz := fn(gtx2)
+		items[i] = item{fn: fn, size: sz}
+		if i > 0 {
+			totalW += spacing
+		}
+		totalW += sz.Size.X
+	}
+
+	// 如果总宽度不超过容器宽度，直接一行排列
+	if totalW <= gtx.Constraints.Max.X && len(items) > 0 {
+		children := make([]layout.FlexChild, len(items))
+		for i := range items {
+			idx := i
+			children[i] = layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				if idx > 0 {
+					return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, items[idx].fn)
+				}
+				return items[idx].fn(gtx)
+			})
+		}
+		return layout.Flex{Axis: layout.Horizontal, Spacing: layout.SpaceEnd}.Layout(gtx, children...)
+	}
+
+	// 第二遍：按行排列
+	var lines [][]item
+	var currentLine []item
+	var currentW int
+
+	for _, it := range items {
+		w := it.size.Size.X
+		if len(currentLine) > 0 {
+			w += spacing
+		}
+		if currentW+w > gtx.Constraints.Max.X && len(currentLine) > 0 {
+			lines = append(lines, currentLine)
+			currentLine = []item{it}
+			currentW = it.size.Size.X
+		} else {
+			currentLine = append(currentLine, it)
+			currentW += w
+		}
+	}
+	if len(currentLine) > 0 {
+		lines = append(lines, currentLine)
+	}
+
+	// 布局各行
+	var lineWidgets []layout.FlexChild
+	for _, line := range lines {
+		line := line
+		lineWidgets = append(lineWidgets, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			children := make([]layout.FlexChild, len(line))
+			for i := range line {
+				idx := i
+				children[i] = layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					if idx > 0 {
+						return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, line[idx].fn)
+					}
+					return line[idx].fn(gtx)
+				})
+			}
+			return layout.Flex{Axis: layout.Horizontal, Spacing: layout.SpaceEnd}.Layout(gtx, children...)
+		}))
+	}
+	return layout.Flex{Axis: layout.Vertical, Spacing: layout.SpaceEnd}.Layout(gtx, lineWidgets...)
 }
 
 // layoutSetupDialog 布局 adb/scrcpy 缺失时的设置对话框
@@ -1199,4 +1369,265 @@ func (w *Window) handleInstallAPK(serial string) {
 	} else {
 		log.Printf("安装APK成功: %s -> %s", serial, path)
 	}
+}
+
+// openArgsDialog 打开自定义参数弹窗
+func (w *Window) openArgsDialog(serial string) {
+	cfg := config.DefaultConfig()
+	if w.configManager != nil {
+		if c, err := w.configManager.Load(); err == nil {
+			cfg = c
+		}
+	}
+	w.dialog = settingsDialog{
+		dialogType:   "args",
+		dialogSerial: serial,
+	}
+	w.dialog.argsEd.SetText(cfg.ExtraArgs)
+}
+
+// openResDialog 打开分辨率弹窗
+func (w *Window) openResDialog(serial string) {
+	cfg := config.DefaultConfig()
+	if w.configManager != nil {
+		if c, err := w.configManager.Load(); err == nil {
+			cfg = c
+		}
+	}
+	opts := w.getResolutionOptions(cfg)
+	clicks := make(map[string]*widget.Clickable)
+	for _, o := range opts {
+		k := fmt.Sprintf("%dx%d", o.width, o.height)
+		clicks[k] = &widget.Clickable{}
+	}
+	sW, sH := 0, 0
+	if cfg.DeviceResolution != "" {
+		fmt.Sscanf(cfg.DeviceResolution, "%dx%d", &sW, &sH)
+	}
+	w.dialog = settingsDialog{
+		dialogType:   "resolution",
+		dialogSerial: serial,
+		resSelectedW: sW,
+		resSelectedH: sH,
+		resClicks:    clicks,
+		resOptions:   opts,
+	}
+	w.dialog.resAddEd.SingleLine = true
+}
+
+// saveArgs 保存自定义参数
+func (w *Window) saveArgs() {
+	if w.configManager == nil {
+		w.dialog.dialogType = ""
+		return
+	}
+	cfg, err := w.configManager.Load()
+	if err != nil {
+		log.Printf("加载配置失败: %v", err)
+		w.dialog.dialogType = ""
+		return
+	}
+	cfg.ExtraArgs = w.dialog.argsEd.Text()
+	if err := w.configManager.Save(cfg); err != nil {
+		log.Printf("保存配置失败: %v", err)
+	}
+	w.dialog.dialogType = ""
+}
+
+// saveResolution 保存分辨率设置并应用到设备
+func (w *Window) saveResolution() {
+	if w.configManager == nil {
+		w.dialog.dialogType = ""
+		return
+	}
+	cfg, err := w.configManager.Load()
+	if err != nil {
+		log.Printf("加载配置失败: %v", err)
+		w.dialog.dialogType = ""
+		return
+	}
+	w2, h2 := w.dialog.resSelectedW, w.dialog.resSelectedH
+	if w2 == 0 && h2 == 0 {
+		cfg.DeviceResolution = ""
+	} else {
+		cfg.DeviceResolution = fmt.Sprintf("%dx%d", w2, h2)
+	}
+	if err := w.configManager.Save(cfg); err != nil {
+		log.Printf("保存配置失败: %v", err)
+	}
+
+	// 通过adb设置设备分辨率
+	go func() {
+		if err := adb.SetResolution(w.dialog.dialogSerial, w2, h2); err != nil {
+			log.Printf("设置设备分辨率失败: %v", err)
+		} else {
+			log.Printf("已设置设备分辨率: %s", cfg.DeviceResolution)
+		}
+	}()
+
+	w.dialog.dialogType = ""
+}
+
+// addCustomResolution 添加自定义分辨率
+func (w *Window) addCustomResolution() {
+	text := strings.TrimSpace(w.dialog.resAddEd.Text())
+	if text == "" {
+		return
+	}
+	var cw, ch int
+	if _, err := fmt.Sscanf(text, "%dx%d", &cw, &ch); err != nil || cw <= 0 || ch <= 0 {
+		return
+	}
+	label := fmt.Sprintf("%dx%d", cw, ch)
+	w.dialog.resOptions = append(w.dialog.resOptions, resolutionOption{label, cw, ch})
+	k := fmt.Sprintf("%dx%d", cw, ch)
+	w.dialog.resClicks[k] = &widget.Clickable{}
+	w.dialog.resSelectedW = cw
+	w.dialog.resSelectedH = ch
+	w.dialog.resAddEd.SetText("")
+
+	if w.configManager != nil {
+		cfg, err := w.configManager.Load()
+		if err == nil {
+			exists := false
+			for _, c := range cfg.CustomDeviceResolutions {
+				if c == label {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				cfg.CustomDeviceResolutions = append(cfg.CustomDeviceResolutions, label)
+				w.configManager.Save(cfg)
+			}
+		}
+	}
+}
+
+// getResolutionOptions 获取所有可用的分辨率选项
+func (w *Window) getResolutionOptions(cfg config.ScrcpyConfig) []resolutionOption {
+	opts := []resolutionOption{
+		{"Original (reset)", 0, 0},
+		{"1080p (1080x1920)", 1080, 1920},
+		{"720p (720x1280)", 720, 1280},
+		{"480p (480x854)", 480, 854},
+	}
+	for _, custom := range cfg.CustomDeviceResolutions {
+		var cw, ch int
+		if _, err := fmt.Sscanf(custom, "%dx%d", &cw, &ch); err != nil || cw <= 0 || ch <= 0 {
+			continue
+		}
+		skip := false
+		for _, o := range opts {
+			if o.width == cw && o.height == ch {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+		opts = append(opts, resolutionOption{custom, cw, ch})
+	}
+	return opts
+}
+
+// layoutArgsDialog 布局自定义参数弹窗
+func (w *Window) layoutArgsDialog(gtx layout.Context, theme *material.Theme) layout.FlexChild {
+	return layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+		return layout.Inset{Left: unit.Dp(16), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return widget.Border{
+				Color:        color.NRGBA{R: 180, G: 180, B: 180, A: 255},
+				Width:        unit.Dp(1),
+				CornerRadius: unit.Dp(4),
+			}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Vertical, Spacing: layout.SpaceEnd}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return material.Body2(theme, "Extra arguments for scrcpy:").Layout(gtx)
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							ed := material.Editor(theme, &w.dialog.argsEd, "e.g. --no-audio --rotation 1")
+							return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, ed.Layout)
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Flex{Axis: layout.Horizontal, Spacing: layout.SpaceEnd}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return material.Button(theme, &w.dialog.argsCancel, "Cancel").Layout(gtx)
+								}),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return material.Button(theme, &w.dialog.argsSave, "Save").Layout(gtx)
+								}),
+							)
+						}),
+					)
+				})
+			})
+		})
+	})
+}
+
+// layoutResDialog 布局分辨率弹窗
+func (w *Window) layoutResDialog(gtx layout.Context, theme *material.Theme) layout.FlexChild {
+	return layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+		return layout.Inset{Left: unit.Dp(16), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return widget.Border{
+				Color:        color.NRGBA{R: 180, G: 180, B: 180, A: 255},
+				Width:        unit.Dp(1),
+				CornerRadius: unit.Dp(4),
+			}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					children := []layout.FlexChild{
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return material.Body2(theme, "Resolution:").Layout(gtx)
+						}),
+					}
+
+					for _, opt := range w.dialog.resOptions {
+						o := opt
+						k := fmt.Sprintf("%dx%d", o.width, o.height)
+						btn := material.Button(theme, w.dialog.resClicks[k], o.label)
+						if w.dialog.resSelectedW == o.width && w.dialog.resSelectedH == o.height {
+							btn.Background = color.NRGBA{R: 0, G: 120, B: 215, A: 255}
+						}
+						children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								return btn.Layout(gtx)
+							})
+						}))
+					}
+
+					children = append(children,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								return layout.Flex{Axis: layout.Horizontal, Spacing: layout.SpaceEnd}.Layout(gtx,
+									layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+										ed := material.Editor(theme, &w.dialog.resAddEd, "Custom (e.g. 960x1920)")
+										return ed.Layout(gtx)
+									}),
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										return material.Button(theme, &w.dialog.resAddBtn, "Add").Layout(gtx)
+									}),
+								)
+							})
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								return layout.Flex{Axis: layout.Horizontal, Spacing: layout.SpaceEnd}.Layout(gtx,
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										return material.Button(theme, &w.dialog.resCancel, "Cancel").Layout(gtx)
+									}),
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										return material.Button(theme, &w.dialog.resSave, "Apply").Layout(gtx)
+									}),
+								)
+							})
+						}),
+					)
+
+					return layout.Flex{Axis: layout.Vertical, Spacing: layout.SpaceEnd}.Layout(gtx, children...)
+				})
+			})
+		})
+	})
 }
